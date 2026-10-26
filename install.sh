@@ -24,7 +24,7 @@ while [ "$#" -gt 0 ]; do
 done
 
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-raw_base=https://raw.githubusercontent.com/wahyuabrory/little-zen/main
+raw_base=https://raw.githubusercontent.com/palexander/little-zen/main
 temp_payload=
 
 if [ ! -f "$script_dir/littleZen.uc.js" ] || [ ! -f "$script_dir/vendor/fx-autoconfig/program/config.js" ]; then

@@ -6,7 +6,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
-$rawBase = 'https://raw.githubusercontent.com/wahyuabrory/little-zen/main'
+$rawBase = 'https://raw.githubusercontent.com/palexander/little-zen/main'
 $script:TempPayload = $null
 
 function Stop-Install([string]$Message) {

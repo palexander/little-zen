@@ -1,129 +1,102 @@
-# Little Zen without Sine
+# Little Zen
 
-A Little Zen backport for Zen Browser on Windows, Linux, and macOS. It uses `userChromeJS` and does not require Sine.
+Small, temporary Zen Browser windows for links opened from other apps. Read the page, close it, or use **Open in Space** to move the live tab into your main window.
 
-This project is based on [12th-devs/little-zen](https://github.com/12th-devs/little-zen) and includes the behavior and UI changes developed for this setup.
-
-![Little Zen showcase](assets/little-zen-showcase.gif)
+This fork combines [wahyuabrory/little-zen](https://github.com/wahyuabrory/little-zen)'s installer and recent fixes with workspace routing, live-tab transfer, and macOS window improvements developed for this version.
 
 ## Features
 
-- Open a blank Little Zen window with `Ctrl+Alt+N`.
-- Use an editable address and search bar inside Little Zen.
-- Keep searches and typed addresses in the Little Zen window.
-- Use Back, Forward, and Reload navigation controls.
-- Open a page link in a focused Little Zen window with `Ctrl+Alt+Click`.
-- Open an existing Zen tab in Little Zen with `Ctrl+Alt+Click` on the tab.
-- Press `Ctrl+O` in Little Zen to move the page to the most recent Space.
-- Press `Ctrl+Alt+O` to select a different Space.
-- Use the **Open in Space** toolbar control with searchable Space selection.
-- Ignore Zen Space routing and keep container-extension redirects in the Little Zen window.
-- Preserve the live tab when moving it back into the main Zen window when possible.
-- Adapt the Little Zen frame and toolbar colors to the loaded page.
-- Keep pinned extension buttons in the sidebar URL bar and hide them while editing the address.
-- Skip this backport automatically when native Little Zen support is available.
+- External links open in independent Little Zen windows with a minimal toolbar and no browser sidebar or tab strip.
+- Zen's existing Space Routing rules determine the workspace and container before the page loads.
+- **Open in Space** adopts the live tab instead of reopening its URL. The page retains JavaScript state, unsaved form values, scroll position, navigation history, and its existing cookie container. A failed adoption leaves the source window open.
+- A compact split button provides an inline shortcut hint and a searchable destination picker with keyboard navigation.
+- Window size and position are remembered between windows and browser restarts.
+- Native macOS stoplight buttons remain visible beside the address bar.
+- Closing a Little Zen window avoids briefly displaying Zen's start page. Connected pages still receive their unload checks.
+- Toolbar-hover and address-popup fixes keep page content and controls aligned.
 
 ## Install
 
-Close Zen, then run one command. The installer includes the required [`fx-autoconfig`](https://github.com/MrOtherGuy/fx-autoconfig) runtime.
+This is a privileged browser customization, not a normal Firefox add-on. It uses the bundled [fx-autoconfig](https://github.com/MrOtherGuy/fx-autoconfig) loader and does not require Sine. Review the scripts before running them.
+
+Quit Zen completely before installing. Back up your profile before updating an existing setup.
+
+### macOS and Linux
+
+Download and inspect the installer, then run it:
+
+```sh
+curl -fsSLo /tmp/little-zen-install.sh https://raw.githubusercontent.com/palexander/little-zen/main/install.sh
+less /tmp/little-zen-install.sh
+sh /tmp/little-zen-install.sh
+```
+
+On macOS, writing to `/Applications/Zen.app` can require administrator access and App Management permission for the terminal app running the installer. Follow the installer's instructions if it cannot write the loader files.
+
+Linux tarball/system installations are supported by the inherited installer. Flatpak is not supported because the loader needs files inside the application installation.
 
 ### Windows
 
-```powershell
-powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/wahyuabrory/little-zen/main/install.ps1 | iex"
-```
-
-If Zen is installed in a protected directory, open PowerShell as Administrator and run the same command. To select paths explicitly:
+Download and inspect `install.ps1` from this repository, then run it in PowerShell:
 
 ```powershell
-.\install.ps1 -ProfilePath "$env:APPDATA\zen\Profiles\your-profile" -ZenPath "C:\Program Files\Zen Browser"
+.\install.ps1
 ```
 
-### Linux
+Administrator access may be needed for a protected Zen installation.
+
+### Explicit paths or local installation
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/wahyuabrory/little-zen/main/install.sh | sh
-```
-
-The installer supports the Zen tarball and normal system packages. A system installation can require `sudo`; the installer prints the exact rerun command if needed.
-
-Zen Flatpak is not supported. Flatpak application files are immutable, but `fx-autoconfig` must add two files beside the browser binary. Use the official tarball instead.
-
-### macOS
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/wahyuabrory/little-zen/main/install.sh | sh
-```
-
-Writing to `/Applications/Zen.app` can require `sudo`. If required, use the exact rerun command printed by the installer.
-
-### Local or explicit paths
-
-Clone the repository when you need to select paths manually:
-
-```sh
-git clone https://github.com/wahyuabrory/little-zen.git
+git clone https://github.com/palexander/little-zen.git
 cd little-zen
+./install.sh --profile "/path/to/zen/profile" --zen "/Applications/Zen.app"
 ```
 
-```sh
-./install.sh --profile "/path/to/zen/profile" --zen "/path/to/Zen.app"
+On Linux, `--zen` is the directory containing the `zen` binary. Windows equivalents:
+
+```powershell
+.\install.ps1 -ProfilePath "C:\path\to\profile" -ZenPath "C:\Program Files\Zen Browser"
 ```
 
-On Linux, `--zen` is the directory containing the `zen` binary. On macOS, it is the `.app` bundle.
+The loader files inside the application are install-wide, but Little Zen runs only in profiles containing its script. The installer refuses to overwrite a different application-level AutoConfig setup. Existing Little Zen script/style files are updated in place.
 
-The scripts do not delete existing Zen or profile files. They stop if another autoconfig installation would be overwritten. Repeated runs update Little Zen without adding duplicate preferences or CSS imports.
-
-## Manual install
-
-Use this only when `fx-autoconfig` is already installed:
-
-1. Open `about:support` in Zen and open the **Profile Folder**.
-2. Close Zen.
-3. Copy `littleZen.uc.js` to:
-
-   ```text
-   <profile>/chrome/JS/littleZen.uc.js
-   ```
-
-4. Copy `little-zen.css` to:
-
-   ```text
-   <profile>/chrome/CSS/little-zen.css
-   ```
-
-5. Add this line at the top of `<profile>/chrome/userChrome.css`:
-
-   ```css
-   @import url("CSS/little-zen.css");
-   ```
-
-6. Set `toolkit.legacyUserProfileCustomizations.stylesheets` to `true` in `about:config`.
-7. Start Zen.
-
-No Sine files or `sine-mods` configuration are required.
+Start Zen after installation. If changes do not appear, use **about:support → Clear startup cache**, then restart.
 
 ## Use
 
-| Action | Shortcut |
+| Action | Shortcut or control |
 | --- | --- |
-| Open blank Little Zen | `Ctrl+Alt+N` |
-| Open a link in Little Zen | `Ctrl+Alt+Click` |
-| Open a main-window tab in Little Zen | `Ctrl+Alt+Click` on the tab |
-| Open in the recent Space | `Ctrl+O` |
-| Choose another Space | `Ctrl+Alt+O` |
+| Open an external link | Click it in another application with Zen set as the destination/default browser |
+| Promote the loaded tab | **Open in Space**, or `Cmd+O` on macOS / `Ctrl+O` elsewhere |
+| Choose a destination | The dropdown chevron, or `Cmd+Option+O` / `Ctrl+Alt+O` |
+| Search the destination list | Type, use arrow keys and Enter; Escape dismisses the menu |
+| Open a link/tab in Little Zen | `Cmd+Option+Click` on macOS / `Ctrl+Alt+Click` elsewhere |
+| Close Little Zen | Native close button or the browser's close-tab shortcut |
 
-You can also use the **Open in Space** button in the Little Zen toolbar.
+The inherited blank-window shortcut is `Cmd+Option+N` / `Ctrl+Alt+N`; availability can depend on Zen shortcuts and the keyboard layout.
 
-## Debugging
+## Compatibility and limitations
 
-Set `extensions.littleZen.debugRouting` to `true` in `about:config` to write detailed routing messages. Restart Zen after changes to the script or stylesheet.
+Validated on **Zen 1.23.4b on macOS**. Windows and Linux installers are inherited from upstream; their UI behavior has not been validated for this fork.
 
-## Compatibility
+This code hooks internal Zen/Firefox APIs. Browser updates can change those APIs or replace the application-level loader files. The script stops itself if it detects Zen's native `ZenLittleWindow` module.
 
-Zen internal browser APIs can change between releases. If an update breaks the mod, first test with the latest files and inspect the Browser Console. This backport stops itself when Zen exposes native `ZenLittleWindow` support.
+Live transfer is verified for ordinary web pages. PDF viewers, media/capture sessions, popups, and sites with unusual window-lifecycle behavior may need additional testing.
 
-## Credits
+The inherited diagnostic logger writes navigation URLs to `little-zen-debug.log` in the profile. Avoid sharing that file unredacted. `extensions.littleZen.debugRouting=true` enables additional routing diagnostics. Saved window bounds use `extensions.littleZen.windowGeometry`.
 
-- Original project: [12th-devs/little-zen](https://github.com/12th-devs/little-zen)
-- `userChromeJS` loader: [MrOtherGuy/fx-autoconfig](https://github.com/MrOtherGuy/fx-autoconfig)
+## Remove
+
+Quit Zen. Remove `chrome/JS/littleZen.uc.js`, `chrome/CSS/little-zen.css`, and its import from `chrome/userChrome.css` in the affected profile. If no other scripts use fx-autoconfig, its profile runtime and application loader files can also be removed. Do not remove a shared loader used by other customizations.
+
+## Attribution and licensing
+
+- Original project: [12th-devs/little-zen](https://github.com/12th-devs/little-zen).
+- Installer, non-Sine backport, and subsequent fixes: [wahyuabrory/little-zen](https://github.com/wahyuabrory/little-zen).
+- Native Little Zen work referenced by upstream: [zen-browser/desktop#13450](https://github.com/zen-browser/desktop/pull/13450).
+- Loader: [MrOtherGuy/fx-autoconfig](https://github.com/MrOtherGuy/fx-autoconfig); its license is retained under `vendor/fx-autoconfig/LICENSE`.
+
+Upstream Little Zen does not currently provide a clear repository-wide open-source license. This fork preserves that status and does not assign a new license to upstream code. See [UPSTREAM.md](UPSTREAM.md) for source provenance and the licensing distinction.
+
+Regression checks and developer instructions are in [tests/README.md](tests/README.md).
