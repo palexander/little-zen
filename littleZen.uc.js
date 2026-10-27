@@ -417,6 +417,90 @@
     return null;
   }
 
+  // Only dedicated handoff pages qualify. Ordinary documents that open an
+  // external app (mail, meetings, password managers, etc.) must stay open.
+  function isAppLaunchPage(spec, scheme) {
+    try {
+      const url = new URL(spec);
+      return scheme === "notion" && url.protocol === "https:" &&
+        url.hostname === "app.notion.com" &&
+        /^\/native\/p\/[^/]+\/?$/.test(url.pathname);
+    } catch (error) {
+      return false;
+    }
+  }
+
+  function patchAppLaunchCleanup() {
+    let prototype;
+    try {
+      ({ prototype } = ChromeUtils.importESModule(
+        "resource://gre/modules/ContentDispatchChooser.sys.mjs"
+      ).nsContentDispatchChooser);
+    } catch (error) {
+      log("App-launch cleanup unavailable", error);
+      return;
+    }
+    if (prototype.__littleZenAppLaunchCleanupPatched) {
+      return;
+    }
+    const originalHandleURI = prototype.handleURI;
+    prototype.handleURI = async function (handler, uri, principal, context, ...rest) {
+      const browser = context?.topFrameElement;
+      const win = browser?.ownerDocument?.defaultView;
+      const source = browser?.currentURI?.spec;
+      if (!Services.prefs.getBoolPref("extensions.littleZen.closeAppLaunchers", true) ||
+          !isLittleWindow(win) || context !== context?.top ||
+          browser !== win.gBrowser?.selectedBrowser ||
+          !isAppLaunchPage(source, uri?.scheme)) {
+        return originalHandleURI.call(this, handler, uri, principal, context, ...rest);
+      }
+
+      // handleURI resolves both on launch and on cancellation. Observe its
+      // prompt result on a per-call receiver, without changing the shared
+      // chooser instance or wrapping the native XPCOM handler object.
+      let accepted = true;
+      const chooser = Object.create(this);
+      chooser._prompt = async (...args) => {
+        accepted = false;
+        const result = await this._prompt(...args);
+        accepted = !!result;
+        return result;
+      };
+      const documentId = browser.browsingContext?.currentWindowGlobal?.innerWindowId;
+      const result = await originalHandleURI.call(
+        chooser, handler, uri, principal, context, ...rest
+      );
+      // A web handler opens another website rather than a native application.
+      const nativeHandler = handler.preferredAction === Ci.nsIHandlerInfo.useSystemDefault ||
+        (handler.preferredAction === Ci.nsIHandlerInfo.useHelperApp &&
+          !(handler.preferredApplicationHandler instanceof Ci.nsIWebHandlerApp));
+      if (!accepted || !nativeHandler || win.closed) {
+        return result;
+      }
+      win.clearTimeout(win.__littleZenAppLaunchCloseTimer);
+      const delay = Math.max(500, Services.prefs.getIntPref(
+        "extensions.littleZen.appLaunchCloseDelayMs", 1800
+      ));
+      win.__littleZenAppLaunchCloseTimer = win.setTimeout(() => {
+        delete win.__littleZenAppLaunchCloseTimer;
+        if (!win.closed && isLittleWindow(win) &&
+            Services.prefs.getBoolPref("extensions.littleZen.closeAppLaunchers", true) &&
+            !win.__littleZenTransferInProgress &&
+            // Zen keeps a permanent blank tab for its start-page machinery.
+            [...win.gBrowser.tabs].filter(tab =>
+              tab !== win.gZenWorkspaces?._emptyTab && !tab.closing).length === 1 &&
+            win.gBrowser.selectedBrowser === browser &&
+            browser.currentURI?.spec === source &&
+            browser.browsingContext?.currentWindowGlobal?.innerWindowId === documentId) {
+          // Keep the same native unload checks as the window's close command.
+          win.BrowserCommands.tryToCloseWindow();
+        }
+      }, delay);
+      return result;
+    };
+    prototype.__littleZenAppLaunchCleanupPatched = true;
+  }
+
   function patchBrowserWindowTracker() {
     if (BrowserWindowTracker[PATCH_FLAGS.browserWindowTracker]) {
       return;
@@ -3948,6 +4032,7 @@
     win[PATCH_FLAGS.window] = true;
     win.LittleZen = LittleZen;
 
+    patchAppLaunchCleanup();
     patchBrowserWindowTracker();
     patchUriLoadingHelper();
     patchBrowserDOMWindow(win);

@@ -16,6 +16,6 @@ Optional browser-chrome screenshot:
 python3 tests/run.py --zen /Applications/Zen.app/Contents/MacOS/zen --screenshot /tmp/little-zen.png
 ```
 
-The suite checks workspace/container assignment, no sidebar or main-window tab pollution, toolbar-hover layout, destination search and keyboard/mouse selection, live document/form/history/scroll/cookie preservation during adoption, original-container retention across Space changes, failure safety, and null-safe close handling with unload refusal. Native macOS controls require a separate visual check because headless screenshots do not render AppKit buttons.
+The suite checks workspace/container assignment, no sidebar or main-window tab pollution, toolbar-hover layout, destination search and keyboard/mouse selection, live document/form/history/scroll/cookie preservation during adoption, original-container retention across Space changes, failure safety, and null-safe close handling with unload refusal. Launcher tests exercise Firefox's protocol chooser with a simulated native handler, checking accepted and canceled prompts, launch errors, browser navigation, unrelated URLs/protocols, disabling the feature, unload refusal, and additional tabs. They do not launch Notion or another external app. Native macOS controls require a separate visual check because headless screenshots do not render AppKit buttons.
 
 Validated on Zen 1.23.4b/macOS. PowerShell and Windows/Linux UI behavior have not been validated here.

@@ -12,6 +12,7 @@ import tempfile
 import threading
 import time
 from marionette import Client
+from launchers import check_launch_cleanup
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -109,6 +110,7 @@ def run(client, url, screenshot):
     js('''const w=testLittle;Object.defineProperty(w.gBrowser,"browsers",{configurable:true,value:[null,...realBrowsers]});window.closeEvents=[];w.gBrowser.tabContainer.addEventListener("TabClose",()=>closeEvents.push("TabClose"));w.document.getElementById("cmd_close").dispatchEvent(new w.Event("command",{bubbles:true,cancelable:true}));''')
     wait_until(lambda: js('return testLittle.closed;'))
     assert js('return closeEvents;') == []
+    check_launch_cleanup(c, url)
     print('PASS: workspace/container routing, picker search/keyboard/mouse handling, hover layout, live-state adoption, transfer failure safety, and null-safe close')
 
 def main():
