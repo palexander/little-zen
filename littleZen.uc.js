@@ -448,7 +448,8 @@
       "id": "teams",
       "schemes": [
         "msteams",
-        "ms-teams"
+        "ms-teams",
+        "web+msteams"
       ],
       "include": [
         "^https://teams\\.(microsoft\\.com|live\\.com|cloud\\.microsoft)/dl/launcher/launcher\\.html\\?"
@@ -549,6 +550,13 @@
     const url = new URL(spec);
     if (rule.id === "zoom") url.hash = "";
     if (rule.id === "linear") url.searchParams.delete("noRedirect");
+    // Teams updates these flags with history.pushState during its launch.
+    // Keep the meeting URL and all other parameters significant.
+    if (rule.id === "teams") {
+      for (const key of ["suppressPrompt", "suppressAutoDownload", "promptSuccess"]) {
+        url.searchParams.delete(key);
+      }
+    }
     return url.href;
   }
 
@@ -600,8 +608,10 @@
         (handler.preferredAction === Ci.nsIHandlerInfo.useHelperApp &&
           !(handler.preferredApplicationHandler instanceof Ci.nsIWebHandlerApp));
       if (!accepted || !nativeHandler || win.closed) {
+        log("App-launch cleanup: no native handoff", { app: rule.id, accepted, nativeHandler });
         return result;
       }
+      log("App-launch cleanup armed", { app: rule.id, scheme: uri.scheme });
       win.clearTimeout(win.__littleZenAppLaunchCloseTimer);
       const delay = Math.max(500, Services.prefs.getIntPref(
         "extensions.littleZen.appLaunchCloseDelayMs", 1800
@@ -620,6 +630,7 @@
             win.gBrowser.selectedBrowser !== browser ||
             browser.browsingContext?.currentWindowGlobal?.innerWindowId !== documentId ||
             appLauncherNavigationKey(rule, browser.currentURI.spec) !== navigationKey) {
+          log("App-launch cleanup canceled: page or window changed", { app: rule.id });
           return;
         }
         if (!matchesAppLaunchPage(rule, browser.currentURI.spec)) {
@@ -628,6 +639,7 @@
           readyAt ??= Date.now();
           if (Date.now() - readyAt >= delay) {
             // Preserve the native unload checks used by the close command.
+            log("App-launch cleanup requesting close", { app: rule.id });
             win.BrowserCommands.tryToCloseWindow();
             return;
           }

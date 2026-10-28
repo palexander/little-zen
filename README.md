@@ -77,7 +77,7 @@ Start Zen after installation. If changes do not appear, use **about:support → 
 
 The inherited blank-window shortcut is `Cmd+Option+N` / `Ctrl+Alt+N`; availability can depend on Zen shortcuts and the keyboard layout.
 
-Automatic launch-page cleanup supports **Zoom/ZoomGov, Microsoft Teams (work and personal), Slack, Notion, Discord invites, and Linear**. It uses bundled [App Tab Cleaner presets](https://github.com/babraham123/app-tab-cleaner/blob/main/src/lib/presets.ts), plus an accepted native-app launch check. Zoom must also have its `#success` marker; Linear must have `noRedirect=1`. Navigation to the web version cancels cleanup.
+Automatic launch-page cleanup supports **Zoom/ZoomGov, Microsoft Teams (work and personal), Slack, Notion, Discord invites, and Linear**. It uses bundled [App Tab Cleaner presets](https://github.com/babraham123/app-tab-cleaner/blob/main/src/lib/presets.ts), plus an accepted native-app launch check. Zoom must also have its `#success` marker; Linear must have `noRedirect=1`. Teams supports `msteams:`, `ms-teams:`, and `web+msteams:`; its same-document launch-status flags may change without canceling cleanup. Changing the meeting destination or navigating to the web version cancels cleanup.
 
 Set `extensions.littleZen.closeAppLaunchers=false` in `about:config` to disable cleanup globally. Each app has a boolean preference `extensions.littleZen.appLaunchers.<id>`: `zoom`, `teams`, `slack`, `notion`, `discord`, `linear`, `figma`, or `spotify`. Figma and Spotify default to **false** because their patterns also match normal web pages; set their preference to true to opt in. These preferences can be created in `about:config` if absent.
 
