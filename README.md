@@ -9,6 +9,7 @@ This fork combines [wahyuabrory/little-zen](https://github.com/wahyuabrory/littl
 - External links open in independent Little Zen windows with a minimal toolbar and no browser sidebar or tab strip.
 - Zen's existing Space Routing rules determine the workspace and container before the page loads.
 - **Open in Space** adopts the live tab instead of reopening its URL. The page retains JavaScript state, unsaved form values, scroll position, navigation history, and its existing cookie container. A failed adoption leaves the source window open.
+- Right-click a tab and choose **Move to Little Zen** to move its live page into a new Little Zen window, keeping its Space, cookie container, and page state.
 - A compact split button provides an inline shortcut hint and a searchable destination picker with keyboard navigation.
 - App-launch windows for Zoom/ZoomGov, Teams, Slack, Notion, Discord, and Linear close automatically shortly after an accepted native app handoff. Canceled prompts, launch errors, and navigation back to the website leave the window open.
 - Window size and position are remembered between windows and browser restarts.
@@ -69,11 +70,14 @@ Start Zen after installation. If changes do not appear, use **about:support → 
 | Action | Shortcut or control |
 | --- | --- |
 | Open an external link | Click it in another application with Zen set as the destination/default browser |
+| Move an existing tab into Little Zen | Right-click the tab → **Move to Little Zen** |
 | Promote the loaded tab | **Open in Space**, or `Cmd+O` on macOS / `Ctrl+O` elsewhere |
 | Choose a destination | The dropdown chevron, or `Cmd+Option+O` / `Ctrl+Alt+O` |
 | Search the destination list | Type, use arrow keys and Enter; Escape dismisses the menu |
 | Open a link/tab in Little Zen | `Cmd+Option+Click` on macOS / `Ctrl+Alt+Click` elsewhere |
 | Close Little Zen | Native close button or the browser's close-tab shortcut |
+
+The tab-menu action moves the tab you right-clicked. Tabs in a split view must be removed from that split before moving. If the move fails, the live page is retained.
 
 The inherited blank-window shortcut is `Cmd+Option+N` / `Ctrl+Alt+N`; availability can depend on Zen shortcuts and the keyboard layout.
 

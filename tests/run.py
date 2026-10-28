@@ -14,6 +14,7 @@ import time
 from marionette import Client
 from launchers import check_launch_cleanup
 from protocol_dispatch import check_protocol_dispatch
+from tab_context_move import check_tab_context_move
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -115,6 +116,7 @@ def run(client, url, screenshot):
     assert js('return closeEvents;') == []
     check_protocol_dispatch(c, url)
     check_launch_cleanup(c, url)
+    check_tab_context_move(c, url)
     print('PASS: workspace/container routing, picker search/keyboard/mouse handling, hover layout, live-state adoption, transfer failure safety, and null-safe close')
 
 def main():

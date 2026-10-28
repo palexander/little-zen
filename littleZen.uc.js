@@ -3039,6 +3039,11 @@
   }
 
   function getInitialTargetWorkspaceId(win, mainWin) {
+    // A manually moved live tab returns to its original Space even when its
+    // URL would route new external links somewhere else.
+    const returnWorkspace = win?.__littleZenReturnWorkspaceId &&
+      getWorkspaceById(mainWin, win.__littleZenReturnWorkspaceId);
+    if (returnWorkspace) return returnWorkspace.uuid;
     const activeWorkspaceId = getActiveWorkspaceId(mainWin);
     const url = getLittleWindowRouteUrl(win);
     const routeDebugBase = {
@@ -4017,6 +4022,131 @@
     log("Patched remote content Ctrl+Alt+click handling");
   }
 
+  function canMoveTabToLittleZen(win, tab) {
+    return !isLittleWindow(win) && !!tab?.linkedBrowser && tab.isConnected &&
+      !tab.closing && !tab.hasAttribute("zen-empty-tab") &&
+      tab !== win.gZenWorkspaces?._emptyTab && !tab.splitview &&
+      !tab.__littleZenMoveInProgress;
+  }
+
+  async function moveTabToLittleZen(win, tab) {
+    if (!canMoveTabToLittleZen(win, tab)) return null;
+    const workspaceId = tab.getAttribute("zen-workspace-id") || win.gZenWorkspaces?.activeWorkspace;
+    const workspace = getWorkspaceById(win, workspaceId);
+    if (!workspace) return null;
+    tab.__littleZenMoveInProgress = true;
+    let littleWindow = null;
+    let adoptedTab = null;
+    try {
+      // Always create a new destination; do not reuse another empty Little Zen.
+      // No URL is queued: the existing browser is adopted after Zen is ready.
+      littleWindow = win.OpenBrowserWindow({
+        zenLittleWindow: true, all: false, features: OPEN_FEATURES,
+        private: PrivateBrowsingUtils.isWindowPrivate(win), expanded: true,
+      });
+      if (!littleWindow) throw new Error("Could not create Little Zen window");
+      littleWindow.__littleZenSuppressUrlbarFocus = true;
+      littleWindow.__littleZenReturnWorkspaceId = workspace.uuid;
+      await new Promise((resolve, reject) => {
+        let settled = false;
+        let pollTimer;
+        const finish = error => {
+          if (settled) return;
+          settled = true;
+          win.clearTimeout(timer);
+          win.clearTimeout(pollTimer);
+          Services.obs.removeObserver(onClosed, "domwindowclosed");
+          if (error) reject(error); else resolve();
+        };
+        const onClosed = { observe(subject) {
+          if (subject === littleWindow || subject === win) {
+            finish(new Error("Source or destination closed during startup"));
+          }
+        }};
+        const timer = win.setTimeout(() => finish(new Error("Little Zen startup timed out")), 20000);
+        Services.obs.addObserver(onClosed, "domwindowclosed");
+        const poll = () => {
+          if (littleWindow.closed || win.closed) {
+            finish(new Error("Source or destination closed during startup"));
+          } else if (littleWindow.gBrowserInit?.delayedStartupFinished &&
+                     littleWindow.gZenStartup?.promiseInitialized) {
+            littleWindow.gZenStartup.promiseInitialized.then(() => finish(), finish);
+          } else {
+            pollTimer = win.setTimeout(poll, 50);
+          }
+        };
+        poll();
+      });
+      if (littleWindow.closed || win.closed || !tab.isConnected || tab.closing) {
+        throw new Error("Source or destination closed before transfer");
+      }
+      littleWindow.__littleZenReturnWorkspaceId = workspace.uuid;
+      littleWindow.__littleZenSourceWindow = new WeakRef(win);
+      associateLittleWindowWithWorkspace(littleWindow, workspace);
+      const placeholders = [...littleWindow.gBrowser.tabs].filter(
+        candidate => candidate !== littleWindow.gZenWorkspaces?._emptyTab
+      );
+      adoptedTab = littleWindow.gBrowser.adoptTab(tab, { tabIndex: Infinity });
+      if (!adoptedTab?.linkedBrowser) {
+        throw new Error("Zen did not adopt the live tab");
+      }
+      adoptedTab.setAttribute("zen-workspace-id", workspace.uuid);
+      littleWindow.gBrowser.selectedTab = adoptedTab;
+      for (const placeholder of placeholders) {
+        if (placeholder !== adoptedTab && placeholder.isConnected && !placeholder.closing) {
+          littleWindow.gBrowser.removeTab(placeholder, { animate: false });
+        }
+      }
+      syncLittleWindowTransparentBrowsers(littleWindow);
+      applyExpandedLittleWindow(littleWindow, "tab-context-menu");
+      setLittleWindowLoading(littleWindow, false, "live-tab-moved");
+      littleWindow.__littleZenRefreshSpacePickerTarget?.();
+      updateLittleZenBlendedTheme(littleWindow, "live-tab-moved");
+      littleWindow.focus();
+      littleWindow.gBrowser.selectedBrowser.focus();
+      log("Moved live tab to Little Zen", { workspaceId: workspace.uuid });
+      return littleWindow;
+    } catch (error) {
+      log("Move to Little Zen failed; retaining the live page", error);
+      // Close only an unused destination. Once adoption succeeds, the live
+      // document belongs there and must survive any subsequent layout error.
+      if (!adoptedTab?.linkedBrowser && littleWindow && !littleWindow.closed) {
+        littleWindow.close();
+      }
+      return adoptedTab?.linkedBrowser ? littleWindow : null;
+    } finally {
+      delete tab.__littleZenMoveInProgress;
+    }
+  }
+
+  function attachTabContextMenu(win) {
+    if (isLittleWindow(win)) return;
+    const popup = win.document.getElementById("tabContextMenu");
+    if (!popup || win.document.getElementById("context_moveTabToLittleZen")) return;
+    const item = win.document.createXULElement("menuitem");
+    item.id = "context_moveTabToLittleZen";
+    item.setAttribute("label", "Move to Little Zen");
+    // Native popuphidden clears TabContextMenu.contextTab; keep this menu's
+    // target available if the command arrives after dismissal.
+    let contextTab = null;
+    const update = event => {
+      if (event.target !== popup) return;
+      // Resolve the context tab, which can differ from the selected tab.
+      const tab = contextTab = win.TabContextMenu?.contextTab;
+      item.disabled = !canMoveTabToLittleZen(win, tab);
+      item.setAttribute("tooltiptext", tab?.splitview
+        ? "Remove this tab from its split view before moving it"
+        : "Move this live tab into its own Little Zen window");
+      const anchor = win.document.getElementById("context_moveTabOptions");
+      popup.insertBefore(item, anchor?.parentNode === popup ? anchor : null);
+    };
+    popup.appendChild(item);
+    popup.addEventListener("popupshowing", update);
+    item.addEventListener("command", () => {
+      moveTabToLittleZen(win, contextTab);
+    });
+  }
+
   function attachMainTabShortcut(win) {
     if (isLittleWindow(win) || win[PATCH_FLAGS.tabClickListener]) {
       return;
@@ -4191,6 +4321,7 @@
     patchOpenBrowserWindow(win);
     patchContentLinkShortcut();
     attachMainTabShortcut(win);
+    attachTabContextMenu(win);
     ensureFallbackShortcut(win);
     ensureCommand(win);
 
@@ -4247,6 +4378,7 @@
     }
 
     whenStartupReady(win, () => {
+      attachTabContextMenu(win);
       log("Little Zen delayed startup reached");
       if (redirectExternalStartup) {
         let attempts = 0;
