@@ -15,3 +15,7 @@ The combined script/style retain the local workspace/container routing, startup 
 Neither Little Zen repository supplies a clear root-level license grant at the revisions listed above. The older `12th-devs/little-zen/window/README.md` says the code is provided as-is for Zen modifications, but does not provide a standard open-source license. Some upstream material references Zen's MPL-2.0 implementation; that alone does not establish licensing for all subsequent additions.
 
 This fork does not claim a new license for that upstream material. Existing notices and the separately licensed fx-autoconfig license are preserved. GitHub's platform permission to fork a public repository is distinct from a general open-source redistribution license. Clarification from the upstream authors is still needed before representing the entire project as permissively licensed.
+
+## App-launch URL presets
+
+Patterns are adapted from [App Tab Cleaner](https://github.com/babraham123/app-tab-cleaner), commit `ac355984c7e9e7d73862b569355c20b510ddcf1a`, `src/lib/presets.ts`. The original source snapshot and MIT copyright/permission notice are retained in `vendor/app-tab-cleaner/`. Protocol matching, accepted-launch checks, completion-marker waiting, and window lifecycle guards are Little Zen integration code. Presets are bundled locally; no remote rule downloads run in the browser.

@@ -34,9 +34,35 @@ def check_launch_cleanup(client, url):
         ('unload refusal', {'refuseUnload': True}, False),
         ('multiple tabs', {'extraTab': True}, False),
     ]
+    cases += [
+        ('legacy Notion host', {'source':'https://www.notion.so/native/p/123?deepLinkOpenNewTab=true'}, True),
+        ('Zoom completion marker', {'source':'https://us02.zoom.us/j/123?pwd=test#success','scheme':'zoommtg'}, True),
+        ('ZoomGov completion marker', {'source':'https://agency.zoomgov.us/s/123#success','scheme':'zoommtg'}, True),
+        ('Zoom delayed marker', {'source':'https://zoom.us/j/123','scheme':'zoommtg','afterSource':'https://zoom.us/j/123#success'}, True),
+        ('Zoom launch from child frame', {'source':'https://zoom.us/j/123','scheme':'zoommtg','afterSource':'https://zoom.us/j/123#success','subframe':True}, True),
+        ('Zoom missing marker', {'source':'https://zoom.us/j/123','scheme':'zoommtg'}, False),
+        ('Zoom browser fallback', {'source':'https://zoom.us/j/123#success','scheme':'zoommtg','afterSource':'https://zoom.us/wc/123/join'}, False),
+        ('Teams work', {'source':'https://teams.microsoft.com/dl/launcher/launcher.html?url=test','scheme':'msteams'}, True),
+        ('Teams personal', {'source':'https://teams.live.com/dl/launcher/launcher.html?url=test','scheme':'msteams'}, True),
+        ('Teams cloud', {'source':'https://teams.cloud.microsoft/dl/launcher/launcher.html?url=test','scheme':'ms-teams'}, True),
+        ('Slack handoff', {'source':'https://example.enterprise.slack.com/ssb/signin_redirect?x=1','scheme':'slack'}, True),
+        ('Slack web client', {'source':'https://app.slack.com/client/T1/C1','scheme':'slack'}, False),
+        ('Discord invite', {'source':'https://discord.gg/abc','scheme':'discord'}, True),
+        ('Linear delayed marker', {'source':'https://linear.app/example/issue/ABC-1','scheme':'linear','afterSource':'https://linear.app/example/issue/ABC-1?noRedirect=1'}, True),
+        ('Linear settings excluded', {'source':'https://linear.app/example/settings?noRedirect=1','scheme':'linear'}, False),
+        ('Figma disabled by default', {'source':'https://figma.com/design/abc/name','scheme':'figma'}, False),
+        ('Figma opted in', {'source':'https://figma.com/design/abc/name','scheme':'figma','preset':'figma','presetEnabled':True}, True),
+        ('Spotify disabled by default', {'source':'https://open.spotify.com/track/abc','scheme':'spotify'}, False),
+        ('Spotify opted in', {'source':'https://open.spotify.com/track/abc','scheme':'spotify','preset':'spotify','presetEnabled':True}, True),
+        ('Teams disabled', {'source':'https://teams.microsoft.com/dl/launcher/launcher.html?url=test','scheme':'msteams','preset':'teams','presetEnabled':False}, False),
+        ('Teams wrong protocol', {'source':'https://teams.microsoft.com/dl/launcher/launcher.html?url=test','scheme':'notion'}, False),
+        ('Teams lookalike host', {'source':'https://teams.microsoft.com.example.org/dl/launcher/launcher.html?url=test','scheme':'msteams'}, False),
+    ]
     for name, options, should_close in cases:
-        js('window.testLittle=LittleZen.openLittleWindow(window,{url:' + json.dumps(url) + ',source:"launcher-test"});')
+        fixture_url = url + 'launcher-with-frame' if options.get('subframe') else url
+        js('window.testLittle=LittleZen.openLittleWindow(window,{url:' + json.dumps(fixture_url) + ',source:"launcher-test"});')
         wait_ready()
+        print('Checking launcher:',name,flush=True)
         result = ajs('''const done=arguments[arguments.length-1];(async()=>{
           const options=''' + json.dumps(options) + ''';
           const w=testLittle,b=w.gBrowser.selectedBrowser;
@@ -46,6 +72,8 @@ def check_launch_cleanup(client, url):
           Object.defineProperty(b,"currentURI",{configurable:true,get(){return Services.io.newURI(w.__fixtureLauncherURL);}});
           Services.prefs.setBoolPref("extensions.littleZen.closeAppLaunchers",options.enabled??true);
           Services.prefs.setIntPref("extensions.littleZen.appLaunchCloseDelayMs",500);
+          for(const id of ["zoom","slack","teams","notion","discord","linear","figma","spotify"])Services.prefs.clearUserPref("extensions.littleZen.appLaunchers."+id);
+          if(options.preset)Services.prefs.setBoolPref("extensions.littleZen.appLaunchers."+options.preset,options.presetEnabled);
           if(options.refuseUnload)w.CanCloseWindow=()=>false;
           if(options.extraTab)w.gBrowser.addTab("about:blank",{triggeringPrincipal:Services.scriptSecurityManager.getSystemPrincipal(),inBackground:true});
           const {nsContentDispatchChooser}=ChromeUtils.importESModule("resource://gre/modules/ContentDispatchChooser.sys.mjs");
@@ -55,15 +83,19 @@ def check_launch_cleanup(client, url):
           let launches=0,error=null;
           const handler={type:options.scheme??"notion",alwaysAskBeforeHandling:options.ask??false,preferredAction:Ci.nsIHandlerInfo.useSystemDefault,preferredApplicationHandler:null,
             launchWithURI(){if(options.fail)throw new Error("fixture launch failure");launches++;}};
-          try{await chooser.handleURI(handler,Services.io.newURI(handler.type+":fixture"),Services.scriptSecurityManager.getSystemPrincipal(),b.browsingContext);}catch(e){error=String(e);}
+          const context=options.subframe?b.browsingContext.children[0]:b.browsingContext;
+          if(!context)throw new Error("missing fixture browsing context");
+          try{await chooser.handleURI(handler,Services.io.newURI(handler.type+":fixture"),Services.scriptSecurityManager.getSystemPrincipal(),context);}catch(e){error=String(e);}
+          if(options.afterSource)w.__fixtureLauncherURL=options.afterSource;
           if(options.navigate)w.__fixtureLauncherURL="https://app.notion.com/continue-in-browser";
           done({launches,error});
         })().catch(e=>done({unexpected:String(e)}));''')
         assert 'unexpected' not in result, (name, result)
-        time.sleep(.8)
+        time.sleep(1.2)
         closed = js('return testLittle.closed;')
         assert closed == should_close, (name, result, closed)
         if not closed:
             js('delete testLittle.gBrowser.selectedBrowser.currentURI;testLittle.close();')
     js('Services.prefs.clearUserPref("extensions.littleZen.closeAppLaunchers");Services.prefs.clearUserPref("extensions.littleZen.appLaunchCloseDelayMs");')
-    print('PASS: app-launch cleanup after accepted handoff; cancel, failure, navigation, host, protocol, preference, unload and multiple-tab guards')
+    js('for(const id of ["zoom","slack","teams","notion","discord","linear","figma","spotify"])Services.prefs.clearUserPref("extensions.littleZen.appLaunchers."+id);')
+    print('PASS: multi-app presets, delayed completion markers, per-app opt-ins, and app-launch cleanup after accepted handoff; cancel, failure, navigation, host, protocol, preference, unload and multiple-tab guards')

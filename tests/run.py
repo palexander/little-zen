@@ -19,6 +19,8 @@ ROOT = Path(__file__).resolve().parents[1]
 class Fixture(BaseHTTPRequestHandler):
     def do_GET(self):
         body = b'<!doctype html><title>Live transfer fixture</title><input id="draft"><div style="height:4000px">Test page</div>'
+        if self.path == '/launcher-with-frame':
+            body += b'<iframe src="/frame"></iframe>'
         self.send_response(200)
         self.send_header('Content-Type', 'text/html; charset=utf-8')
         self.send_header('Content-Length', str(len(body)))

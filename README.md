@@ -10,7 +10,7 @@ This fork combines [wahyuabrory/little-zen](https://github.com/wahyuabrory/littl
 - Zen's existing Space Routing rules determine the workspace and container before the page loads.
 - **Open in Space** adopts the live tab instead of reopening its URL. The page retains JavaScript state, unsaved form values, scroll position, navigation history, and its existing cookie container. A failed adoption leaves the source window open.
 - A compact split button provides an inline shortcut hint and a searchable destination picker with keyboard navigation.
-- Notion app-launch windows close automatically shortly after Firefox hands the link to the native app. Canceled prompts, launch errors, and navigation back to the website leave the window open.
+- App-launch windows for Zoom/ZoomGov, Teams, Slack, Notion, Discord, and Linear close automatically shortly after an accepted native app handoff. Canceled prompts, launch errors, and navigation back to the website leave the window open.
 - Window size and position are remembered between windows and browser restarts.
 - Native macOS stoplight buttons remain visible beside the address bar.
 - Closing a Little Zen window avoids briefly displaying Zen's start page. Connected pages still receive their unload checks.
@@ -77,7 +77,11 @@ Start Zen after installation. If changes do not appear, use **about:support → 
 
 The inherited blank-window shortcut is `Cmd+Option+N` / `Ctrl+Alt+N`; availability can depend on Zen shortcuts and the keyboard layout.
 
-Dedicated Notion launch pages at `https://app.notion.com/native/p/…` are currently supported for automatic cleanup. Ordinary pages and extension login windows stay open. Set `extensions.littleZen.closeAppLaunchers=false` in `about:config` to disable cleanup. The delay is controlled by `extensions.littleZen.appLaunchCloseDelayMs` (default 1800, minimum 500 milliseconds). Cleanup requires Firefox to accept the native launch; it cannot verify that the app finished loading the destination.
+Automatic launch-page cleanup supports **Zoom/ZoomGov, Microsoft Teams (work and personal), Slack, Notion, Discord invites, and Linear**. It uses bundled [App Tab Cleaner presets](https://github.com/babraham123/app-tab-cleaner/blob/main/src/lib/presets.ts), plus an accepted native-app launch check. Zoom must also have its `#success` marker; Linear must have `noRedirect=1`. Navigation to the web version cancels cleanup.
+
+Set `extensions.littleZen.closeAppLaunchers=false` in `about:config` to disable cleanup globally. Each app has a boolean preference `extensions.littleZen.appLaunchers.<id>`: `zoom`, `teams`, `slack`, `notion`, `discord`, `linear`, `figma`, or `spotify`. Figma and Spotify default to **false** because their patterns also match normal web pages; set their preference to true to opt in. These preferences can be created in `about:config` if absent.
+
+The close delay is `extensions.littleZen.appLaunchCloseDelayMs` (default 1800, minimum 500 milliseconds). A pending completion marker is watched for up to 10 seconds. Ordinary pages and extension login windows stay open. Cleanup requires Firefox to accept the native launch; it cannot verify that the app finished loading the destination.
 
 ## Compatibility and limitations
 

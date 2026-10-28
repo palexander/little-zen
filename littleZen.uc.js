@@ -417,17 +417,139 @@
     return null;
   }
 
-  // Only dedicated handoff pages qualify. Ordinary documents that open an
-  // external app (mail, meetings, password managers, etc.) must stay open.
-  function isAppLaunchPage(spec, scheme) {
-    try {
-      const url = new URL(spec);
-      return scheme === "notion" && url.protocol === "https:" &&
-        url.hostname === "app.notion.com" &&
-        /^\/native\/p\/[^/]+\/?$/.test(url.pathname);
-    } catch (error) {
-      return false;
+  // URL patterns adapted from App Tab Cleaner (MIT, Bereket Abraham).
+  // Pinned upstream source and license: vendor/app-tab-cleaner/.
+  const APP_LAUNCH_PRESETS = [
+    {
+      "id": "zoom",
+      "schemes": [
+        "zoommtg",
+        "zoomus",
+        "zoomgov"
+      ],
+      "include": [
+        "^https://([a-z0-9-]+\\.)?zoom(gov)?\\.us/[jsw]/[^/?#]+[^#]*#success$"
+      ],
+      "exclude": [],
+      "enabled": true
+    },
+    {
+      "id": "slack",
+      "schemes": [
+        "slack"
+      ],
+      "include": [
+        "^https://([a-z0-9-]+\\.)?(enterprise\\.)?slack\\.com/(archives/|app_redirect\\b|ssb/(signin_)?redirect)"
+      ],
+      "exclude": [],
+      "enabled": true
+    },
+    {
+      "id": "teams",
+      "schemes": [
+        "msteams",
+        "ms-teams"
+      ],
+      "include": [
+        "^https://teams\\.(microsoft\\.com|live\\.com|cloud\\.microsoft)/dl/launcher/launcher\\.html\\?"
+      ],
+      "exclude": [],
+      "enabled": true
+    },
+    {
+      "id": "notion",
+      "schemes": [
+        "notion"
+      ],
+      "include": [
+        "^https://(www\\.notion\\.so|app\\.notion\\.com)/native/.*[?&]deepLinkOpenNewTab=true"
+      ],
+      "exclude": [],
+      "enabled": true
+    },
+    {
+      "id": "discord",
+      "schemes": [
+        "discord"
+      ],
+      "include": [
+        "^https://(discord(app)?\\.com/invite|discord\\.gg)/[a-z0-9-]+/?(\\?.*)?$"
+      ],
+      "exclude": [],
+      "enabled": true
+    },
+    {
+      "id": "linear",
+      "schemes": [
+        "linear"
+      ],
+      "include": [
+        "^https://linear\\.app/[^/]+/.*[?&]noRedirect=1(&|#|$)"
+      ],
+      "exclude": [
+        "^https://linear\\.app/[^/]+/(settings|integrations)\\b"
+      ],
+      "enabled": true
+    },
+    {
+      "id": "figma",
+      "schemes": [
+        "figma"
+      ],
+      "include": [
+        "^https://(www\\.)?figma\\.com/(file|design|board|slides)/[a-z0-9]+"
+      ],
+      "exclude": [],
+      "enabled": false
+    },
+    {
+      "id": "spotify",
+      "schemes": [
+        "spotify"
+      ],
+      "include": [
+        "^https://open\\.spotify\\.com/(intl-[a-z-]+/)?(track|album|playlist|episode|show|artist)/[a-z0-9]+"
+      ],
+      "exclude": [],
+      "enabled": false
     }
+  ].map(rule => ({
+    ...rule,
+    include: rule.include.map(pattern => new RegExp(pattern, "i")),
+    exclude: rule.exclude.map(pattern => new RegExp(pattern, "i")),
+  }));
+
+  function appLauncherEnabled(rule) {
+    return Services.prefs.getBoolPref(
+      `extensions.littleZen.appLaunchers.${rule.id}`, rule.enabled
+    );
+  }
+
+  function matchesAppLaunchPage(rule, spec) {
+    return rule.include.some(pattern => pattern.test(spec)) &&
+      !rule.exclude.some(pattern => pattern.test(spec));
+  }
+
+  // Zoom/Linear may add their completion marker just after native dispatch.
+  // Recognize that pending handoff, but require the real marker before closing.
+  function appLauncherCandidate(spec, scheme) {
+    try {
+      for (const rule of APP_LAUNCH_PRESETS) {
+        if (!appLauncherEnabled(rule) || !rule.schemes.includes(scheme)) continue;
+        const url = new URL(spec);
+        if (rule.id === "zoom") url.hash = "success";
+        if (rule.id === "linear") url.searchParams.set("noRedirect", "1");
+        if (matchesAppLaunchPage(rule, url.href)) return rule;
+      }
+    } catch (error) {}
+    return null;
+  }
+
+  function appLauncherNavigationKey(rule, spec) {
+    const url = new URL(spec);
+    if (rule.id === "zoom") url.hash = "";
+    if (rule.id === "linear") url.searchParams.delete("noRedirect");
+    return url.href;
   }
 
   function patchAppLaunchCleanup() {
@@ -445,13 +567,16 @@
     }
     const originalHandleURI = prototype.handleURI;
     prototype.handleURI = async function (handler, uri, principal, context, ...rest) {
+      // Launchers can dispatch the protocol from a hidden child frame.
+      // Validate the containing page, not the child frame's transient URL.
       const browser = context?.topFrameElement;
       const win = browser?.ownerDocument?.defaultView;
       const source = browser?.currentURI?.spec;
+      const rule = appLauncherCandidate(source, uri?.scheme);
       if (!Services.prefs.getBoolPref("extensions.littleZen.closeAppLaunchers", true) ||
-          !isLittleWindow(win) || context !== context?.top ||
+          !isLittleWindow(win) ||
           browser !== win.gBrowser?.selectedBrowser ||
-          !isAppLaunchPage(source, uri?.scheme)) {
+          !rule) {
         return originalHandleURI.call(this, handler, uri, principal, context, ...rest);
       }
 
@@ -481,21 +606,36 @@
       const delay = Math.max(500, Services.prefs.getIntPref(
         "extensions.littleZen.appLaunchCloseDelayMs", 1800
       ));
-      win.__littleZenAppLaunchCloseTimer = win.setTimeout(() => {
+      const navigationKey = appLauncherNavigationKey(rule, source);
+      const deadline = Date.now() + 10000;
+      let readyAt = matchesAppLaunchPage(rule, source) ? Date.now() : null;
+      const check = () => {
         delete win.__littleZenAppLaunchCloseTimer;
-        if (!win.closed && isLittleWindow(win) &&
-            Services.prefs.getBoolPref("extensions.littleZen.closeAppLaunchers", true) &&
-            !win.__littleZenTransferInProgress &&
+        if (win.closed || !isLittleWindow(win) ||
+            !Services.prefs.getBoolPref("extensions.littleZen.closeAppLaunchers", true) ||
+            !appLauncherEnabled(rule) || win.__littleZenTransferInProgress ||
             // Zen keeps a permanent blank tab for its start-page machinery.
             [...win.gBrowser.tabs].filter(tab =>
-              tab !== win.gZenWorkspaces?._emptyTab && !tab.closing).length === 1 &&
-            win.gBrowser.selectedBrowser === browser &&
-            browser.currentURI?.spec === source &&
-            browser.browsingContext?.currentWindowGlobal?.innerWindowId === documentId) {
-          // Keep the same native unload checks as the window's close command.
-          win.BrowserCommands.tryToCloseWindow();
+              tab !== win.gZenWorkspaces?._emptyTab && !tab.closing).length !== 1 ||
+            win.gBrowser.selectedBrowser !== browser ||
+            browser.browsingContext?.currentWindowGlobal?.innerWindowId !== documentId ||
+            appLauncherNavigationKey(rule, browser.currentURI.spec) !== navigationKey) {
+          return;
         }
-      }, delay);
+        if (!matchesAppLaunchPage(rule, browser.currentURI.spec)) {
+          if (readyAt !== null || Date.now() >= deadline) return;
+        } else {
+          readyAt ??= Date.now();
+          if (Date.now() - readyAt >= delay) {
+            // Preserve the native unload checks used by the close command.
+            win.BrowserCommands.tryToCloseWindow();
+            return;
+          }
+        }
+        win.__littleZenAppLaunchCloseTimer = win.setTimeout(check, 100);
+      };
+      // Allow Zen's initial container placeholder to finish closing first.
+      win.__littleZenAppLaunchCloseTimer = win.setTimeout(check, delay);
       return result;
     };
     prototype.__littleZenAppLaunchCleanupPatched = true;
