@@ -1912,16 +1912,110 @@
       const app = messageObject(getClass("NSApplication"), selector("sharedApplication"));
       const isActive = selector("isActive");
       const frontWindowOnly = 1; // kSetFrontProcessFrontWindowOnly
+      const core = ctypes.open("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation");
+      const copyWindows = services.declare("CGWindowListCopyWindowInfo", ctypes.default_abi, pointer, ctypes.uint32_t, ctypes.uint32_t);
+      const arrayCount = core.declare("CFArrayGetCount", ctypes.default_abi, ctypes.long, pointer);
+      const arrayItem = core.declare("CFArrayGetValueAtIndex", ctypes.default_abi, pointer, pointer, ctypes.long);
+      const dictionaryItem = core.declare("CFDictionaryGetValue", ctypes.default_abi, pointer, pointer, pointer);
+      const makeString = core.declare("CFStringCreateWithCString", ctypes.default_abi, pointer, pointer, ctypes.char.ptr, ctypes.uint32_t);
+      const readNumber = core.declare("CFNumberGetValue", ctypes.default_abi, ctypes.bool, pointer, ctypes.int, ctypes.int32_t.ptr);
+      const release = core.declare("CFRelease", ctypes.default_abi, ctypes.void_t, pointer);
+      const numberKey = makeString(null, "kCGWindowNumber", 0x08000100);
+      const layerKey = makeString(null, "kCGWindowLayer", 0x08000100);
+      const windowNumber = selector("windowNumber");
+      const getNumber = objc.declare("objc_msgSend", ctypes.default_abi, ctypes.long, pointer, pointer);
+      const orderRelative = objc.declare("objc_msgSend", ctypes.default_abi, ctypes.void_t, pointer, pointer, ctypes.long, ctypes.long);
+      const orderWindow = selector("orderWindow:relativeTo:");
+      const { setInterval, clearInterval } = ChromeUtils.importESModule("resource://gre/modules/Timer.sys.mjs");
+      let tracking = false;
+      let inactiveOrder = null;
+      let pendingRestore = null;
+      const nativeWindowFor = win => {
+        const handle = win.docShell.treeOwner.QueryInterface(Ci.nsIBaseWindow).nativeHandle;
+        return !handle || /^0x0+$/.test(handle) ? null : pointer(ctypes.UInt64(handle));
+      };
+      const snapshotOrder = () => {
+        // Read only window IDs and levels, never other apps' titles or content.
+        const array = copyWindows(1 | 16, 0); // on-screen, excluding desktop
+        if (array.isNull()) return [];
+        try {
+          const result = [];
+          const value = ctypes.int32_t();
+          for (let i = 0; i < Number(arrayCount(array).toString()); i++) {
+            const entry = arrayItem(array, i);
+            const layer = dictionaryItem(entry, layerKey);
+            if (layer.isNull() || !readNumber(layer, 3, value.address()) || value.value !== 0) continue;
+            const number = dictionaryItem(entry, numberKey);
+            if (!number.isNull() && readNumber(number, 3, value.address())) result.push(value.value);
+          }
+          return result;
+        } finally { release(array); }
+      };
+      const restoreOrder = (snapshot, exceptWindow) => {
+        const live = new Set(snapshotOrder());
+        const own = new Map();
+        for (const win of browserWindows()) {
+          if (win === exceptWindow || win.closed) continue;
+          const native = nativeWindowFor(win);
+          if (!native || !messageBool(native, isVisible)) continue;
+          const number = Number(getNumber(native, windowNumber).toString());
+          if (live.has(number)) own.set(number, native);
+        }
+        const order = snapshot.filter(number => live.has(number));
+        let below = null;
+        for (let i = order.length - 1; i >= 0; i--) {
+          const number = order[i];
+          const native = own.get(number);
+          if (native) {
+            if (below !== null) {
+              orderRelative(native, orderWindow, 1, below); // above its old neighbor
+            } else {
+              const above = order.slice(0, i).reverse().find(id => !own.has(id));
+              if (above !== undefined) orderRelative(native, orderWindow, -1, above);
+            }
+          }
+          below = number;
+        }
+      };
       const bridge = {
         // Keep the libraries/types alive while their declared functions are used.
-        objc, services, ctypes,
+        objc, services, core, ctypes, snapshotOrder,
+        startTracking() {
+          if (tracking) return;
+          tracking = true;
+          // A URL AppleEvent can activate all Zen windows before JS sees it.
+          // Keep a short-lived, in-memory order snapshot while Zen is inactive.
+          const timer = setInterval(() => {
+            try {
+              if (Services.prefs.getBoolPref("extensions.littleZen.focusWindowOnly", true) &&
+                  !messageBool(app, isActive)) {
+                inactiveOrder = { at: Date.now(), order: snapshotOrder() };
+              }
+            } catch (error) {
+              clearInterval(timer);
+              tracking = false;
+              inactiveOrder = null;
+              log("Could not snapshot macOS window order", error);
+            }
+          }, 250);
+        },
+        noteExternalOpen() {
+          if (!inactiveOrder || Date.now() - inactiveOrder.at > 2000) return;
+          pendingRestore = { expires: Date.now() + 3000, order: inactiveOrder.order };
+          restoreOrder(pendingRestore.order, null);
+          log("Restored Zen window order after external activation");
+        },
         raise(win) {
-          const handle = win.docShell.treeOwner.QueryInterface(Ci.nsIBaseWindow).nativeHandle;
-          if (!handle || /^0x0+$/.test(handle)) return false;
-          const nativeWindow = pointer(ctypes.UInt64(handle));
+          const nativeWindow = nativeWindowFor(win);
+          if (!nativeWindow) return false;
           if (!messageBool(nativeWindow, isVisible)) return false;
-          // Order only this NSWindow first, then activate only the front window.
-          // No window levels, collection behavior, or other windows are changed.
+          if (pendingRestore) {
+            const snapshot = pendingRestore;
+            pendingRestore = null;
+            if (Date.now() <= snapshot.expires) restoreOrder(snapshot.order, win);
+          }
+          // Raise the requested window at its normal level, without changing
+          // geometry, minimization, or other applications' window ordering.
           message(nativeWindow, orderFront);
           if (!messageBool(app, isActive) && setFront(process.address(), frontWindowOnly) !== 0) {
             throw new Error("macOS refused single-window activation");
@@ -1937,6 +2031,16 @@
       BrowserWindowTracker[key] = null;
       return null;
     }
+  }
+
+  function attachMacWindowOrderTracking(win) {
+    if (AppConstants.platform !== "macosx") return;
+    whenStartupReady(win, () => {
+      try {
+        const handle = win.docShell.treeOwner.QueryInterface(Ci.nsIBaseWindow).nativeHandle;
+        if (handle && !/^0x0+$/.test(handle)) getMacWindowFocusBridge()?.startTracking();
+      } catch (error) { log("Could not track macOS window order", error); }
+    });
   }
 
   function focusLittleWindow(win) {
@@ -4327,6 +4431,12 @@
         source,
         url,
       });
+      if (AppConstants.platform === "macosx" &&
+          Services.prefs.getBoolPref("extensions.littleZen.focusWindowOnly", true) &&
+          (source.startsWith("browserDOMWindow.") || source.startsWith("external"))) {
+        try { getMacWindowFocusBridge()?.noteExternalOpen(); }
+        catch (error) { log("Could not restore background Zen window order", error); }
+      }
 
       for (const browserWindow of browserWindows()) {
         if (isEmptyLittleWindow(browserWindow)) {
@@ -4408,6 +4518,7 @@
     patchContentLinkShortcut();
     attachMainTabShortcut(win);
     attachTabContextMenu(win);
+    attachMacWindowOrderTracking(win);
     ensureFallbackShortcut(win);
     ensureCommand(win);
 

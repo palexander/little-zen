@@ -119,7 +119,7 @@ def run(client, url, screenshot):
     check_tab_context_move(c, url)
     print('PASS: workspace/container routing, picker search/keyboard/mouse handling, hover layout, live-state adoption, transfer failure safety, and null-safe close')
 
-def main():
+def main(check=run, visible=False):
     parser=argparse.ArgumentParser()
     parser.add_argument('--zen',default='/Applications/Zen.app/Contents/MacOS/zen',help='Zen executable with fx-autoconfig program loader installed')
     parser.add_argument('--screenshot',help='Optional path for a browser-chrome screenshot')
@@ -139,14 +139,14 @@ def main():
         prefs={'marionette.port':port,'toolkit.legacyUserProfileCustomizations.stylesheets':True,'browser.shell.checkDefaultBrowser':False,'browser.startup.homepage_override.mstone':'ignore','zen.welcome-screen.seen':True}
         (profile/'user.js').write_text('\n'.join('user_pref('+json.dumps(k)+', '+json.dumps(v)+');' for k,v in prefs.items()))
         log=(profile/'process.log').open('w')
-        process=subprocess.Popen([args.zen,'-no-remote','-profile',str(profile),'-headless','--marionette','-remote-allow-system-access','about:blank'],stdout=log,stderr=subprocess.STDOUT)
+        process=subprocess.Popen([args.zen,'-no-remote','-profile',str(profile),*([] if visible else ['-headless']),'--marionette','-remote-allow-system-access','about:blank'],stdout=log,stderr=subprocess.STDOUT)
         client=None
         try:
             def connect():
                 try: return Client(port)
                 except ConnectionRefusedError: return None
             client=wait_until(connect,30)
-            run(client,'http://127.0.0.1:'+str(server.server_port)+'/',args.screenshot)
+            check(client,'http://127.0.0.1:'+str(server.server_port)+'/',args.screenshot)
         finally:
             if client:
                 try: client.call('Marionette:Quit',{'flags':['eForceQuit']})
