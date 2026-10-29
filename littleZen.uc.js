@@ -2002,6 +2002,20 @@
           below = number;
         }
       };
+      const activateLauncher = (entry, phase) => {
+        if (Services.startup.shuttingDown ||
+            !Services.prefs.getBoolPref("extensions.littleZen.returnToSourceApp", true) ||
+            !messageBool(app, isActive)) return false;
+        const running = getAppForPid(runningAppClass, appForPid, entry.sourceApp.pid);
+        const identity = appIdentity(running);
+        if (!identity || identity.launched !== entry.sourceApp.launched) return false;
+        const sourceProcess = serial();
+        if (getProcessForPid(identity.pid, sourceProcess.address()) !== 0) return false;
+        restoreOrder(entry.armed, null);
+        if (setFront(sourceProcess.address(), frontWindowOnly) !== 0) return false;
+        log("Returned focus to Little Zen launcher", { phase });
+        return true;
+      };
       const bridge = {
         // Keep the libraries/types alive while their declared functions are used.
         objc, services, core, ctypes, snapshotOrder,
@@ -2022,6 +2036,18 @@
           if (native && messageBool(native, isKeyWindow)) {
             entry.armed = snapshotOrder();
             log("Prepared Little Zen launcher return");
+            if (Services.prefs.getBoolPref("extensions.littleZen.returnBeforeClose", true)) {
+              const sequence = entry.armed;
+              // FinalClose marks the outer window closed before its posted
+              // native destruction. This task runs in that gap. A canceled
+              // DOMWindowClose leaves win.closed false, so focus stays put.
+              Services.tm.dispatchToMainThread(() => {
+                if (!win.closed || entry.armed !== sequence ||
+                    win.__littleZenTransferInProgress || win.__littleZenSuppressAppReturn) return;
+                try { activateLauncher(entry, "before-native-close"); }
+                catch (error) { log("Early Little Zen app return failed", error); }
+              });
+            }
           }
         },
         startTracking() {
@@ -2079,23 +2105,11 @@
           if (!win.closed) continue;
           returns.delete(win);
           if (!entry.armed) continue;
-          // Wait for Gecko's normal next-window focus to settle, then restore the
-          // pre-close order and activate only the launcher's front window.
+          // Fallback for close paths whose native destruction wins the race.
+          // If early handoff succeeded, Zen is no longer active and this is a no-op.
           delayTask(() => {
-            if (Services.startup.shuttingDown ||
-                !Services.prefs.getBoolPref("extensions.littleZen.returnToSourceApp", true) ||
-                !messageBool(app, isActive)) return;
-            try {
-              const running = getAppForPid(runningAppClass, appForPid, entry.sourceApp.pid);
-              const identity = appIdentity(running);
-              if (!identity || identity.launched !== entry.sourceApp.launched) return;
-              const sourceProcess = serial();
-              if (getProcessForPid(identity.pid, sourceProcess.address()) !== 0) return;
-              restoreOrder(entry.armed, null);
-              if (setFront(sourceProcess.address(), frontWindowOnly) === 0) {
-                log("Returned focus to Little Zen launcher");
-              }
-            } catch (error) { log("Could not return focus to Little Zen launcher", error); }
+            try { activateLauncher(entry, "after-native-close-fallback"); }
+            catch (error) { log("Could not return focus to Little Zen launcher", error); }
           }, 50);
         }
       }}, "domwindowclosed");

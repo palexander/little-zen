@@ -56,8 +56,12 @@ def check_focus(client, url, screenshot):
     # A canceled close must not return focus; a real foreground close must.
     js('window.realCanClose=testLittle.CanCloseWindow;testLittle.CanCloseWindow=()=>false;testLittle.BrowserCommands.tryToCloseWindow();')
     assert js('return !testLittle.closed&&focusProbe.active()&&focusProbe.key(testLittle);')
-    js('testLittle.CanCloseWindow=realCanClose;testLittle.BrowserCommands.tryToCloseWindow();')
+    js('testLittle.CanCloseWindow=realCanClose;testLittle.addEventListener("DOMWindowClose",e=>e.preventDefault(),{once:true});testLittle.close();')
+    time.sleep(.1)
+    assert js('return !testLittle.closed&&focusProbe.active()&&focusProbe.key(testLittle);'), 'Canceled DOM close handed off focus'
+    js('window.focusAppAtUnload=null;testLittle.addEventListener("unload",()=>{focusAppAtUnload=focusProbe.foregroundPid();},{once:true});testLittle.BrowserCommands.tryToCloseWindow();')
     suite.wait_until(lambda: js('return testLittle.closed&&!focusProbe.active()&&focusProbe.foregroundPid()===focusSourcePid;'))
+    assert js('return focusAppAtUnload===focusSourcePid;'), 'Handoff happened after native unload'
     assert js('return JSON.stringify(focusProbe.bounds())===JSON.stringify(focusBounds);')
     print('PASS: app-wide activation restores prior order/bounds; Little Zen receives focus; canceled close retains focus; confirmed close returns to its source app')
 
