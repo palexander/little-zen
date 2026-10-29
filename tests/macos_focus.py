@@ -23,12 +23,15 @@ def check_focus(client, url, screenshot):
       const object=b.objc.declare("objc_msgSend",c.default_abi,c.voidptr_t,c.voidptr_t,c.voidptr_t);
       const bool=b.objc.declare("objc_msgSend",c.default_abi,c.bool,c.voidptr_t,c.voidptr_t);
       const number=b.objc.declare("objc_msgSend",c.default_abi,c.long,c.voidptr_t,c.voidptr_t);
+      const getPid=b.objc.declare("objc_msgSend",c.default_abi,c.int32_t,c.voidptr_t,c.voidptr_t);
+      const workspace=object(cls("NSWorkspace"),sel("sharedWorkspace"));
       const send=b.objc.declare("objc_msgSend",c.default_abi,c.void_t,c.voidptr_t,c.voidptr_t);
       const activate=b.objc.declare("objc_msgSend",c.default_abi,c.void_t,c.voidptr_t,c.voidptr_t,c.bool);
       const app=object(cls("NSApplication"),sel("sharedApplication"));
       const native=w=>c.voidptr_t(c.UInt64(w.docShell.treeOwner.QueryInterface(Ci.nsIBaseWindow).nativeHandle));
       window.focusProbe={
         order:()=>b.snapshotOrder(),active:()=>bool(app,sel("isActive")),
+        foregroundPid:()=>getPid(object(workspace,sel("frontmostApplication")),sel("processIdentifier")),
         key:w=>bool(native(w),sel("isKeyWindow")),
         number:w=>Number(number(native(w),sel("windowNumber")).toString()),
         bounds:()=>[window,testSecond].map(w=>({x:w.screenX,y:w.screenY,width:w.outerWidth,height:w.outerHeight})),
@@ -37,7 +40,7 @@ def check_focus(client, url, screenshot):
     input('Return to this terminal so Zen is inactive, then press Enter to test: ')
     assert js('return !focusProbe.active();'), 'The test Zen process must be inactive before starting'
     time.sleep(.35)  # Allow the inactive snapshot poll to see the terminal.
-    js('''window.focusBefore=focusProbe.order();window.focusBounds=focusProbe.bounds();
+    js('''window.focusSourcePid=focusProbe.foregroundPid();window.focusBefore=focusProbe.order();window.focusBounds=focusProbe.bounds();
       window.focusNormalIds=[focusProbe.number(window),focusProbe.number(testSecond)];
       focusProbe.force();
       setTimeout(()=>{window.focusForced=focusProbe.order();window.testLittle=LittleZen.openLittleWindow(window,{url:'''+json.dumps(url)+''',source:"browserDOMWindow.openURI"});},150);''')
@@ -50,7 +53,13 @@ def check_focus(client, url, screenshot):
     assert result['beforeBounds'] == result['afterBounds'], 'Normal-window geometry changed'
     assert result['active'] and result['key'], 'Little Zen did not receive keyboard focus'
     assert all(result['after'].index(result['little']) < result['after'].index(i) for i in result['normal'])
-    print('PASS: app-wide activation reproduced; prior window order and bounds restored; only Little Zen receives focus')
+    # A canceled close must not return focus; a real foreground close must.
+    js('window.realCanClose=testLittle.CanCloseWindow;testLittle.CanCloseWindow=()=>false;testLittle.BrowserCommands.tryToCloseWindow();')
+    assert js('return !testLittle.closed&&focusProbe.active()&&focusProbe.key(testLittle);')
+    js('testLittle.CanCloseWindow=realCanClose;testLittle.BrowserCommands.tryToCloseWindow();')
+    suite.wait_until(lambda: js('return testLittle.closed&&!focusProbe.active()&&focusProbe.foregroundPid()===focusSourcePid;'))
+    assert js('return JSON.stringify(focusProbe.bounds())===JSON.stringify(focusBounds);')
+    print('PASS: app-wide activation restores prior order/bounds; Little Zen receives focus; canceled close retains focus; confirmed close returns to its source app')
 
 
 if __name__ == '__main__':

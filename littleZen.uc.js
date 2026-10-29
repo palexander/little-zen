@@ -640,7 +640,9 @@
           if (Date.now() - readyAt >= delay) {
             // Preserve the native unload checks used by the close command.
             log("App-launch cleanup requesting close", { app: rule.id });
-            win.BrowserCommands.tryToCloseWindow();
+            win.__littleZenSuppressAppReturn = true;
+            try { win.BrowserCommands.tryToCloseWindow(); }
+            finally { if (!win.closed) delete win.__littleZenSuppressAppReturn; }
             return;
           }
         }
@@ -1912,6 +1914,19 @@
       const app = messageObject(getClass("NSApplication"), selector("sharedApplication"));
       const isActive = selector("isActive");
       const frontWindowOnly = 1; // kSetFrontProcessFrontWindowOnly
+      const workspace = messageObject(getClass("NSWorkspace"), selector("sharedWorkspace"));
+      const runningAppClass = getClass("NSRunningApplication");
+      const getPid = objc.declare("objc_msgSend", ctypes.default_abi, ctypes.int32_t, pointer, pointer);
+      const getAppForPid = objc.declare("objc_msgSend", ctypes.default_abi, pointer, pointer, pointer, ctypes.int32_t);
+      const dateValue = objc.declare("objc_msgSend", ctypes.default_abi, ctypes.double, pointer, pointer);
+      const getProcessForPid = services.declare("GetProcessForPID", ctypes.default_abi, ctypes.int16_t, ctypes.int32_t, serial.ptr);
+      const frontmostApp = selector("frontmostApplication");
+      const processId = selector("processIdentifier");
+      const launchDate = selector("launchDate");
+      const dateSeconds = selector("timeIntervalSince1970");
+      const appForPid = selector("runningApplicationWithProcessIdentifier:");
+      const isTerminated = selector("isTerminated");
+      const isKeyWindow = selector("isKeyWindow");
       const core = ctypes.open("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation");
       const copyWindows = services.declare("CGWindowListCopyWindowInfo", ctypes.default_abi, pointer, ctypes.uint32_t, ctypes.uint32_t);
       const arrayCount = core.declare("CFArrayGetCount", ctypes.default_abi, ctypes.long, pointer);
@@ -1926,7 +1941,7 @@
       const getNumber = objc.declare("objc_msgSend", ctypes.default_abi, ctypes.long, pointer, pointer);
       const orderRelative = objc.declare("objc_msgSend", ctypes.default_abi, ctypes.void_t, pointer, pointer, ctypes.long, ctypes.long);
       const orderWindow = selector("orderWindow:relativeTo:");
-      const { setInterval, clearInterval } = ChromeUtils.importESModule("resource://gre/modules/Timer.sys.mjs");
+      const { setInterval, clearInterval, setTimeout: delayTask } = ChromeUtils.importESModule("resource://gre/modules/Timer.sys.mjs");
       let tracking = false;
       let inactiveOrder = null;
       let pendingRestore = null;
@@ -1934,6 +1949,16 @@
         const handle = win.docShell.treeOwner.QueryInterface(Ci.nsIBaseWindow).nativeHandle;
         return !handle || /^0x0+$/.test(handle) ? null : pointer(ctypes.UInt64(handle));
       };
+      const appIdentity = runningApp => {
+        if (runningApp.isNull() || messageBool(runningApp, isTerminated)) return null;
+        const pid = getPid(runningApp, processId);
+        if (pid === Services.appinfo.processID) return null;
+        const date = messageObject(runningApp, launchDate);
+        if (date.isNull()) return null;
+        return { pid, launched: dateValue(date, dateSeconds) };
+      };
+      const foregroundApp = () => appIdentity(messageObject(workspace, frontmostApp));
+      const returns = new Map();
       const snapshotOrder = () => {
         // Read only window IDs and levels, never other apps' titles or content.
         const array = copyWindows(1 | 16, 0); // on-screen, excluding desktop
@@ -1980,6 +2005,25 @@
       const bridge = {
         // Keep the libraries/types alive while their declared functions are used.
         objc, services, core, ctypes, snapshotOrder,
+        rememberLauncher(win, context) {
+          returns.delete(win);
+          if (!context?.sourceApp) return;
+          returns.set(win, { sourceApp: context.sourceApp, armed: null });
+          log("Remembered Little Zen launching app");
+        },
+        prepareReturn(win) {
+          const entry = returns.get(win);
+          if (!entry) return;
+          entry.armed = null;
+          if (Services.startup.shuttingDown || win.__littleZenTransferInProgress || win.__littleZenSuppressAppReturn ||
+              !Services.prefs.getBoolPref("extensions.littleZen.returnToSourceApp", true) ||
+              !messageBool(app, isActive)) return;
+          const native = nativeWindowFor(win);
+          if (native && messageBool(native, isKeyWindow)) {
+            entry.armed = snapshotOrder();
+            log("Prepared Little Zen launcher return");
+          }
+        },
         startTracking() {
           if (tracking) return;
           tracking = true;
@@ -1987,9 +2031,10 @@
           // Keep a short-lived, in-memory order snapshot while Zen is inactive.
           const timer = setInterval(() => {
             try {
-              if (Services.prefs.getBoolPref("extensions.littleZen.focusWindowOnly", true) &&
+              if ((Services.prefs.getBoolPref("extensions.littleZen.focusWindowOnly", true) ||
+                   Services.prefs.getBoolPref("extensions.littleZen.returnToSourceApp", true)) &&
                   !messageBool(app, isActive)) {
-                inactiveOrder = { at: Date.now(), order: snapshotOrder() };
+                inactiveOrder = { at: Date.now(), order: snapshotOrder(), sourceApp: foregroundApp() };
               }
             } catch (error) {
               clearInterval(timer);
@@ -2001,9 +2046,12 @@
         },
         noteExternalOpen() {
           if (!inactiveOrder || Date.now() - inactiveOrder.at > 2000) return;
-          pendingRestore = { expires: Date.now() + 3000, order: inactiveOrder.order };
-          restoreOrder(pendingRestore.order, null);
-          log("Restored Zen window order after external activation");
+          if (Services.prefs.getBoolPref("extensions.littleZen.focusWindowOnly", true)) {
+            pendingRestore = { expires: Date.now() + 3000, order: inactiveOrder.order };
+            restoreOrder(pendingRestore.order, null);
+            log("Restored Zen window order after external activation");
+          }
+          return { sourceApp: inactiveOrder.sourceApp };
         },
         raise(win) {
           const nativeWindow = nativeWindowFor(win);
@@ -2024,6 +2072,33 @@
           return true;
         },
       };
+      Services.obs.addObserver({ observe() {
+        // The observer supplies an XPCOM window wrapper, which need not be the
+        // same JS object used as the map key. Check our tracked outer windows.
+        for (const [win, entry] of returns) {
+          if (!win.closed) continue;
+          returns.delete(win);
+          if (!entry.armed) continue;
+          // Wait for Gecko's normal next-window focus to settle, then restore the
+          // pre-close order and activate only the launcher's front window.
+          delayTask(() => {
+            if (Services.startup.shuttingDown ||
+                !Services.prefs.getBoolPref("extensions.littleZen.returnToSourceApp", true) ||
+                !messageBool(app, isActive)) return;
+            try {
+              const running = getAppForPid(runningAppClass, appForPid, entry.sourceApp.pid);
+              const identity = appIdentity(running);
+              if (!identity || identity.launched !== entry.sourceApp.launched) return;
+              const sourceProcess = serial();
+              if (getProcessForPid(identity.pid, sourceProcess.address()) !== 0) return;
+              restoreOrder(entry.armed, null);
+              if (setFront(sourceProcess.address(), frontWindowOnly) === 0) {
+                log("Returned focus to Little Zen launcher");
+              }
+            } catch (error) { log("Could not return focus to Little Zen launcher", error); }
+          }, 50);
+        }
+      }}, "domwindowclosed");
       BrowserWindowTracker[key] = bridge;
       return bridge;
     } catch (error) {
@@ -2040,6 +2115,16 @@
         const handle = win.docShell.treeOwner.QueryInterface(Ci.nsIBaseWindow).nativeHandle;
         if (handle && !/^0x0+$/.test(handle)) getMacWindowFocusBridge()?.startTracking();
       } catch (error) { log("Could not track macOS window order", error); }
+    });
+  }
+
+  function attachLittleWindowAppReturn(win) {
+    if (AppConstants.platform !== "macosx" || win.__littleZenAppReturnAttached) return;
+    win.__littleZenAppReturnAttached = true;
+    win.addEventListener("DOMWindowClose", event => {
+      if (event.target !== win && event.target !== win.document) return;
+      try { getMacWindowFocusBridge()?.prepareReturn?.(win); }
+      catch (error) { log("Could not prepare Little Zen app return", error); }
     });
   }
 
@@ -4024,6 +4109,7 @@
     attachEmptyTabStateTracking(win);
     attachTransparentBrowserPrefSync(win);
     attachLittleWindowCloseButtonGuard(win);
+    attachLittleWindowAppReturn(win);
     restoreMacWindowControls(win);
     if (!win.__littleZenCloseCommandPatched && win.BrowserCommands) {
       const originalCanClose = win.CanCloseWindow;
@@ -4431,10 +4517,12 @@
         source,
         url,
       });
+      let launchContext = null;
       if (AppConstants.platform === "macosx" &&
-          Services.prefs.getBoolPref("extensions.littleZen.focusWindowOnly", true) &&
+          (Services.prefs.getBoolPref("extensions.littleZen.focusWindowOnly", true) ||
+           Services.prefs.getBoolPref("extensions.littleZen.returnToSourceApp", true)) &&
           (source.startsWith("browserDOMWindow.") || source.startsWith("external"))) {
-        try { getMacWindowFocusBridge()?.noteExternalOpen(); }
+        try { launchContext = getMacWindowFocusBridge()?.noteExternalOpen(); }
         catch (error) { log("Could not restore background Zen window order", error); }
       }
 
@@ -4444,6 +4532,7 @@
           if (expanded) {
             applyExpandedLittleWindow(browserWindow, "expanded-reuse");
           }
+          if (AppConstants.platform === "macosx") getMacWindowFocusBridge()?.rememberLauncher?.(browserWindow, launchContext);
           this.queueNavigation(browserWindow, url, { source, triggeringPrincipal });
           focusLittleWindow(browserWindow);
           if (!url && !expanded) {
@@ -4468,6 +4557,7 @@
       });
 
       if (littleWindow) {
+        if (AppConstants.platform === "macosx") getMacWindowFocusBridge()?.rememberLauncher?.(littleWindow, launchContext);
         this.queueNavigation(littleWindow, url, { source, triggeringPrincipal });
         if (expanded) {
           whenStartupReady(littleWindow, () => {
