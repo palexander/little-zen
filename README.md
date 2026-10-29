@@ -14,6 +14,7 @@ This fork combines [wahyuabrory/little-zen](https://github.com/wahyuabrory/littl
 - App-launch windows for Zoom/ZoomGov, Teams, Slack, Notion, Discord, and Linear close automatically shortly after an accepted native app handoff. Canceled prompts, launch errors, and navigation back to the website leave the window open.
 - Window size and position are remembered between windows and browser restarts.
 - Native macOS stoplight buttons remain visible beside the address bar.
+- On macOS, Little Zen requests activation of only its own window, leaving the other Zen windows in their existing order. Set `extensions.littleZen.focusWindowOnly=false` in `about:config` to restore standard browser activation.
 - Closing a Little Zen window avoids briefly displaying Zen's start page. Connected pages still receive their unload checks.
 - Toolbar-hover and address-popup fixes keep page content and controls aligned.
 

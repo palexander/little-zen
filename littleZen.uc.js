@@ -1886,9 +1886,95 @@
     }, 500);
   }
 
+  function getMacWindowFocusBridge() {
+    const key = "__littleZenMacWindowFocusBridge";
+    if (key in BrowserWindowTracker) return BrowserWindowTracker[key];
+    try {
+      const { ctypes } = ChromeUtils.importESModule("resource://gre/modules/ctypes.sys.mjs");
+      const objc = ctypes.open("/usr/lib/libobjc.A.dylib");
+      const services = ctypes.open("/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices");
+      const pointer = ctypes.voidptr_t;
+      const getClass = objc.declare("objc_getClass", ctypes.default_abi, pointer, ctypes.char.ptr);
+      const selector = objc.declare("sel_registerName", ctypes.default_abi, pointer, ctypes.char.ptr);
+      const message = objc.declare("objc_msgSend", ctypes.default_abi, ctypes.void_t, pointer, pointer);
+      const messageObject = objc.declare("objc_msgSend", ctypes.default_abi, pointer, pointer, pointer);
+      const messageBool = objc.declare("objc_msgSend", ctypes.default_abi, ctypes.bool, pointer, pointer);
+      const serial = ctypes.StructType("LittleZenProcessSerialNumber", [
+        { highLongOfPSN: ctypes.uint32_t }, { lowLongOfPSN: ctypes.uint32_t },
+      ]);
+      const getProcess = services.declare("GetCurrentProcess", ctypes.default_abi, ctypes.int16_t, serial.ptr);
+      const setFront = services.declare("SetFrontProcessWithOptions", ctypes.default_abi, ctypes.int32_t, serial.ptr, ctypes.uint32_t);
+      const process = serial();
+      if (getProcess(process.address()) !== 0) throw new Error("Could not identify Zen process");
+      const orderFront = selector("orderFrontRegardless");
+      const makeKey = selector("makeKeyWindow");
+      const isVisible = selector("isVisible");
+      const app = messageObject(getClass("NSApplication"), selector("sharedApplication"));
+      const isActive = selector("isActive");
+      const frontWindowOnly = 1; // kSetFrontProcessFrontWindowOnly
+      const bridge = {
+        // Keep the libraries/types alive while their declared functions are used.
+        objc, services, ctypes,
+        raise(win) {
+          const handle = win.docShell.treeOwner.QueryInterface(Ci.nsIBaseWindow).nativeHandle;
+          if (!handle || /^0x0+$/.test(handle)) return false;
+          const nativeWindow = pointer(ctypes.UInt64(handle));
+          if (!messageBool(nativeWindow, isVisible)) return false;
+          // Order only this NSWindow first, then activate only the front window.
+          // No window levels, collection behavior, or other windows are changed.
+          message(nativeWindow, orderFront);
+          if (!messageBool(app, isActive) && setFront(process.address(), frontWindowOnly) !== 0) {
+            throw new Error("macOS refused single-window activation");
+          }
+          message(nativeWindow, makeKey);
+          return true;
+        },
+      };
+      BrowserWindowTracker[key] = bridge;
+      return bridge;
+    } catch (error) {
+      log("Single-window macOS activation unavailable", error);
+      BrowserWindowTracker[key] = null;
+      return null;
+    }
+  }
+
+  function focusLittleWindow(win) {
+    if (!win || win.closed) return;
+    if (AppConstants.platform === "macosx" && isLittleWindow(win) &&
+        Services.prefs.getBoolPref("extensions.littleZen.focusWindowOnly", true)) {
+      const bridge = getMacWindowFocusBridge();
+      if (bridge) {
+        try {
+          if (!bridge.raise(win) && !win.__littleZenStartupReady &&
+              (win.__littleZenFocusRetries ?? 0) < 40) {
+            // A newly created chrome window still has its initial document.
+            // Wait until it has a visible native window instead of activating
+            // Zen's previous main window while this one is being constructed.
+            if (!win.__littleZenFocusRetry) {
+              win.__littleZenFocusRetries = (win.__littleZenFocusRetries ?? 0) + 1;
+              win.__littleZenFocusRetry = win.setTimeout(() => {
+                delete win.__littleZenFocusRetry;
+                focusLittleWindow(win);
+              }, 50);
+            }
+            return;
+          }
+        } catch (error) {
+          log("Could not activate only Little Zen", error);
+        }
+      }
+    }
+    win.clearTimeout(win.__littleZenFocusRetry);
+    delete win.__littleZenFocusRetry;
+    delete win.__littleZenFocusRetries;
+    // With the process already active, update Gecko's focus bookkeeping too.
+    win.focus();
+  }
+
   function focusUrlbar(win) {
     try {
-      win.focus();
+      focusLittleWindow(win);
       win.gURLBar?.focus();
       win.gURLBar?.select();
       win.gURLBar?.inputField?.focus();
@@ -3709,7 +3795,7 @@
       centerWindow(win);
 
       try {
-        win.focus();
+        focusLittleWindow(win);
         urlbar?.focus();
         urlbar?.select();
         urlbar?.inputField?.focus();
@@ -3769,7 +3855,7 @@
     setWindowResizable(win, false);
     try {
       win.resizeTo(URLBAR_WIDTH, URLBAR_HEIGHT);
-      win.focus();
+      focusLittleWindow(win);
       closeLittleWindowUrlbar(win, "attach-auto-close-disabled");
     } catch (error) {
       log("Could not size the little window.", error);
@@ -4102,7 +4188,7 @@
       setLittleWindowLoading(littleWindow, false, "live-tab-moved");
       littleWindow.__littleZenRefreshSpacePickerTarget?.();
       updateLittleZenBlendedTheme(littleWindow, "live-tab-moved");
-      littleWindow.focus();
+      focusLittleWindow(littleWindow);
       littleWindow.gBrowser.selectedBrowser.focus();
       log("Moved live tab to Little Zen", { workspaceId: workspace.uuid });
       return littleWindow;
@@ -4249,7 +4335,7 @@
             applyExpandedLittleWindow(browserWindow, "expanded-reuse");
           }
           this.queueNavigation(browserWindow, url, { source, triggeringPrincipal });
-          browserWindow.focus();
+          focusLittleWindow(browserWindow);
           if (!url && !expanded) {
             delete browserWindow.__littleZenSuppressUrlbarFocus;
             focusUrlbar(browserWindow);
@@ -4278,7 +4364,7 @@
             applyExpandedLittleWindow(littleWindow, "expanded-request");
           });
         }
-        littleWindow.focus();
+        focusLittleWindow(littleWindow);
       }
 
       return littleWindow;
