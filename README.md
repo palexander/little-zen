@@ -14,7 +14,7 @@ This fork combines [wahyuabrory/little-zen](https://github.com/wahyuabrory/littl
 - App-launch windows for Zoom/ZoomGov, Teams, Slack, Notion, Discord, and Linear close automatically shortly after an accepted native app handoff. Canceled prompts, launch errors, and navigation back to the website leave the window open.
 - Window size and position are remembered between windows and browser restarts.
 - Native macOS stoplight buttons remain visible beside the address bar.
-- On macOS, closing a foreground Little Zen window hands focus to the app that launched it before native window destruction. Background closes, app handoffs, and promoting a tab into a Space keep their current focus. Set `extensions.littleZen.returnToSourceApp=false` to disable returning to the launching app.
+- On macOS, closing Little Zen while Zen is foreground returns focus to the app that launched it. Closing while another app is foreground, app handoffs, and promoting a tab into a Space keep their current focus. Set `extensions.littleZen.returnToSourceApp=false` to disable returning to the launching app.
 - On macOS, Little Zen activates only its own window. If macOS has already raised the other Zen windows while delivering an external link, Little Zen restores their previous order. Window positions and sizes stay unchanged. Set `extensions.littleZen.focusWindowOnly=false` in `about:config` to restore standard browser activation.
 - Closing a Little Zen window avoids briefly displaying Zen's start page. Connected pages still receive their unload checks.
 - Toolbar-hover and address-popup fixes keep page content and controls aligned.
@@ -89,7 +89,7 @@ Set `extensions.littleZen.closeAppLaunchers=false` in `about:config` to disable 
 
 The close delay is `extensions.littleZen.appLaunchCloseDelayMs` (default 1800, minimum 500 milliseconds). A pending completion marker is watched for up to 10 seconds. Ordinary pages and extension login windows stay open. Cleanup requires Firefox to accept the native launch; it cannot verify that the app finished loading the destination.
 
-Set `extensions.littleZen.returnBeforeClose=false` to use the older post-close handoff if needed. The normal close path now hands off after Firefox accepts the close, before the native window is destroyed; canceled closes retain focus. A delayed fallback remains for unusual close paths.
+The reliable post-close app handoff is the default. The earlier handoff remains experimental and can be enabled with `extensions.littleZen.returnBeforeClose=true`; it may reduce flashing but is not the default because native close paths differ. Canceled closes retain focus.
 
 The macOS focus integration keeps a short-lived window-order snapshot in memory while Zen is inactive. It reads window IDs and levels and remembers the prior app’s process identity, without reading other apps’ window titles or content or writing the snapshot to disk. It only applies restoration when opening an external link immediately after activation.
 

@@ -1926,7 +1926,6 @@
       const dateSeconds = selector("timeIntervalSince1970");
       const appForPid = selector("runningApplicationWithProcessIdentifier:");
       const isTerminated = selector("isTerminated");
-      const isKeyWindow = selector("isKeyWindow");
       const core = ctypes.open("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation");
       const copyWindows = services.declare("CGWindowListCopyWindowInfo", ctypes.default_abi, pointer, ctypes.uint32_t, ctypes.uint32_t);
       const arrayCount = core.declare("CFArrayGetCount", ctypes.default_abi, ctypes.long, pointer);
@@ -1958,6 +1957,13 @@
         return { pid, launched: dateValue(date, dateSeconds) };
       };
       const foregroundApp = () => appIdentity(messageObject(workspace, frontmostApp));
+      const zenIsForeground = () => {
+        const front = messageObject(workspace, frontmostApp);
+        return !front.isNull() && getPid(front, processId) === Services.appinfo.processID;
+      };
+      // An initial chrome document can be replaced during window startup.
+      // Use the stable outer-window ID, not a cross-compartment JS wrapper.
+      const returnKey = win => String(win.windowUtils.outerWindowID);
       const returns = new Map();
       const snapshotOrder = () => {
         // Read only window IDs and levels, never other apps' titles or content.
@@ -2005,7 +2011,7 @@
       const activateLauncher = (entry, phase) => {
         if (Services.startup.shuttingDown ||
             !Services.prefs.getBoolPref("extensions.littleZen.returnToSourceApp", true) ||
-            !messageBool(app, isActive)) return false;
+            !zenIsForeground()) return false;
         const running = getAppForPid(runningAppClass, appForPid, entry.sourceApp.pid);
         const identity = appIdentity(running);
         if (!identity || identity.launched !== entry.sourceApp.launched) return false;
@@ -2020,34 +2026,40 @@
         // Keep the libraries/types alive while their declared functions are used.
         objc, services, core, ctypes, snapshotOrder,
         rememberLauncher(win, context) {
-          returns.delete(win);
+          const key = returnKey(win);
+          returns.delete(key);
           if (!context?.sourceApp) return;
-          returns.set(win, { sourceApp: context.sourceApp, armed: null });
+          returns.set(key, { window: win, sourceApp: context.sourceApp, armed: null });
           log("Remembered Little Zen launching app");
         },
         prepareReturn(win) {
-          const entry = returns.get(win);
-          if (!entry) return;
+          const entry = returns.get(returnKey(win));
+          if (!entry) {
+            log("Little Zen app return skipped", { reason: "no-launcher" });
+            return;
+          }
           entry.armed = null;
           if (Services.startup.shuttingDown || win.__littleZenTransferInProgress || win.__littleZenSuppressAppReturn ||
               !Services.prefs.getBoolPref("extensions.littleZen.returnToSourceApp", true) ||
-              !messageBool(app, isActive)) return;
-          const native = nativeWindowFor(win);
-          if (native && messageBool(native, isKeyWindow)) {
-            entry.armed = snapshotOrder();
-            log("Prepared Little Zen launcher return");
-            if (Services.prefs.getBoolPref("extensions.littleZen.returnBeforeClose", true)) {
-              const sequence = entry.armed;
-              // FinalClose marks the outer window closed before its posted
-              // native destruction. This task runs in that gap. A canceled
-              // DOMWindowClose leaves win.closed false, so focus stays put.
-              Services.tm.dispatchToMainThread(() => {
-                if (!win.closed || entry.armed !== sequence ||
-                    win.__littleZenTransferInProgress || win.__littleZenSuppressAppReturn) return;
-                try { activateLauncher(entry, "before-native-close"); }
-                catch (error) { log("Early Little Zen app return failed", error); }
-              });
-            }
+              !zenIsForeground()) {
+            log("Little Zen app return skipped", { reason: "background-or-suppressed" });
+            return;
+          }
+          // Native close paths may already have cleared isKeyWindow here.
+          // Returning is safe while Zen is the foreground app; another app's
+          // background closes still stay put, and automatic closes are suppressed.
+          entry.armed = snapshotOrder();
+          log("Prepared Little Zen launcher return");
+          if (Services.prefs.getBoolPref("extensions.littleZen.returnBeforeClose", false)) {
+            const sequence = entry.armed;
+            // FinalClose marks the outer window closed before posted native
+            // destruction. A canceled DOMWindowClose leaves win.closed false.
+            Services.tm.dispatchToMainThread(() => {
+              if (!win.closed || entry.armed !== sequence ||
+                  win.__littleZenTransferInProgress || win.__littleZenSuppressAppReturn) return;
+              try { activateLauncher(entry, "before-native-close"); }
+              catch (error) { log("Early Little Zen app return failed", error); }
+            });
           }
         },
         startTracking() {
@@ -2059,7 +2071,7 @@
             try {
               if ((Services.prefs.getBoolPref("extensions.littleZen.focusWindowOnly", true) ||
                    Services.prefs.getBoolPref("extensions.littleZen.returnToSourceApp", true)) &&
-                  !messageBool(app, isActive)) {
+                  !zenIsForeground()) {
                 inactiveOrder = { at: Date.now(), order: snapshotOrder(), sourceApp: foregroundApp() };
               }
             } catch (error) {
@@ -2101,9 +2113,9 @@
       Services.obs.addObserver({ observe() {
         // The observer supplies an XPCOM window wrapper, which need not be the
         // same JS object used as the map key. Check our tracked outer windows.
-        for (const [win, entry] of returns) {
-          if (!win.closed) continue;
-          returns.delete(win);
+        for (const [key, entry] of returns) {
+          if (!entry.window.closed) continue;
+          returns.delete(key);
           if (!entry.armed) continue;
           // Fallback for close paths whose native destruction wins the race.
           // If early handoff succeeded, Zen is no longer active and this is a no-op.

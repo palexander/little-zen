@@ -33,6 +33,7 @@ def check_focus(client, url, screenshot):
         order:()=>b.snapshotOrder(),active:()=>bool(app,sel("isActive")),
         foregroundPid:()=>getPid(object(workspace,sel("frontmostApplication")),sel("processIdentifier")),
         key:w=>bool(native(w),sel("isKeyWindow")),
+        makeNormalKey:()=>send(native(window),sel("makeKeyWindow")),
         number:w=>Number(number(native(w),sel("windowNumber")).toString()),
         bounds:()=>[window,testSecond].map(w=>({x:w.screenX,y:w.screenY,width:w.outerWidth,height:w.outerHeight})),
         force(){activate(app,sel("activateIgnoringOtherApps:"),true);for(const w of [window,testSecond])send(native(w),sel("orderFrontRegardless"));}
@@ -59,11 +60,14 @@ def check_focus(client, url, screenshot):
     js('testLittle.CanCloseWindow=realCanClose;testLittle.addEventListener("DOMWindowClose",e=>e.preventDefault(),{once:true});testLittle.close();')
     time.sleep(.1)
     assert js('return !testLittle.closed&&focusProbe.active()&&focusProbe.key(testLittle);'), 'Canceled DOM close handed off focus'
+    js('focusProbe.makeNormalKey();')
+    assert js('return focusProbe.active()&&!focusProbe.key(testLittle);'), 'Failed to reproduce native key-window clearing'
     js('window.focusAppAtUnload=null;testLittle.addEventListener("unload",()=>{focusAppAtUnload=focusProbe.foregroundPid();},{once:true});testLittle.BrowserCommands.tryToCloseWindow();')
     suite.wait_until(lambda: js('return testLittle.closed&&!focusProbe.active()&&focusProbe.foregroundPid()===focusSourcePid;'))
-    assert js('return focusAppAtUnload===focusSourcePid;'), 'Handoff happened after native unload'
+    if js('return Services.prefs.getBoolPref("extensions.littleZen.returnBeforeClose",false);'):
+        assert js('return focusAppAtUnload===focusSourcePid;'), 'Handoff happened after native unload'
     assert js('return JSON.stringify(focusProbe.bounds())===JSON.stringify(focusBounds);')
-    print('PASS: app-wide activation restores prior order/bounds; Little Zen receives focus; canceled close retains focus; confirmed close returns to its source app')
+    print('PASS: app-wide activation restores prior order/bounds; Little Zen receives focus; canceled close retains focus; confirmed native close after key-window clearing returns to its source app')
 
 
 if __name__ == '__main__':
