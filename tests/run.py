@@ -139,7 +139,10 @@ def main(check=run, visible=False):
         prefs={'marionette.port':port,'toolkit.legacyUserProfileCustomizations.stylesheets':True,'browser.shell.checkDefaultBrowser':False,'browser.startup.homepage_override.mstone':'ignore','zen.welcome-screen.seen':True}
         (profile/'user.js').write_text('\n'.join('user_pref('+json.dumps(k)+', '+json.dumps(v)+');' for k,v in prefs.items()))
         log=(profile/'process.log').open('w')
-        process=subprocess.Popen([args.zen,'-no-remote','-profile',str(profile),*([] if visible else ['-headless']),'--marionette','-remote-allow-system-access','about:blank'],stdout=log,stderr=subprocess.STDOUT)
+        import os
+        environment=os.environ.copy()
+        environment['MOZ_REMOTE_ALLOW_SYSTEM_ACCESS']='1'
+        process=subprocess.Popen([args.zen,'-no-remote','-profile',str(profile),*([] if visible else ['-headless']),'--marionette','-remote-allow-system-access','about:blank'],stdout=log,stderr=subprocess.STDOUT,env=environment)
         client=None
         try:
             def connect():

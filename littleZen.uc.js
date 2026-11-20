@@ -1888,12 +1888,66 @@
     }, 500);
   }
 
+  function launcherDirectory() {
+    const override = Services.env.get("LITTLE_ZEN_LAUNCHER_DIRECTORY");
+    const directory = override
+      ? Cc["@mozilla.org/file/local;1"].createInstance(Ci.nsIFile)
+      : Services.dirsvc.get("UAppData", Ci.nsIFile);
+    if (override) directory.initWithPath(override);
+    else directory.append("little-zen-launcher");
+    return directory;
+  }
+
+  function readLauncherContext(url) {
+    const directory = launcherDirectory();
+    if (!directory.exists()) return null;
+    const files = [...directory.directoryEntries].map(file => file.QueryInterface(Ci.nsIFile))
+      .filter(file => /^request-[A-Fa-f0-9-]+\.json$/.test(file.leafName))
+      .sort((a, b) => a.lastModifiedTime - b.lastModifiedTime);
+    for (const file of files) {
+      try {
+        if (Date.now() - file.lastModifiedTime > 60000 || file.fileSize > 16384) {
+          file.remove(false);
+          continue;
+        }
+        const stream = Cc["@mozilla.org/network/file-input-stream;1"].createInstance(Ci.nsIFileInputStream);
+        stream.init(file, 0x01, 0, 0);
+        const reader = Cc["@mozilla.org/intl/converter-input-stream;1"].createInstance(Ci.nsIConverterInputStream);
+        let text = "";
+        try {
+          reader.init(stream, "UTF-8", 0, 0);
+          const chunk = {};
+          while (reader.readString(16384, chunk)) text += chunk.value;
+        } finally { reader.close(); }
+        const context = JSON.parse(text);
+        if (context.version !== 1 || !Number.isFinite(context.at) ||
+            Date.now() - context.at > 60000 || context.at > Date.now() + 5000) {
+          file.remove(false);
+          continue;
+        }
+        if (Services.io.newURI(context.url).spec !== Services.io.newURI(url).spec) continue;
+        file.remove(false);
+        return context;
+      } catch (error) { log("Could not read Little Zen launcher handoff", error); }
+    }
+    return null;
+  }
+
   function getMacWindowFocusBridge() {
     const key = "__littleZenMacWindowFocusBridge";
     if (key in BrowserWindowTracker) return BrowserWindowTracker[key];
     try {
       const { ctypes } = ChromeUtils.importESModule("resource://gre/modules/ctypes.sys.mjs");
       const objc = ctypes.open("/usr/lib/libobjc.A.dylib");
+      const system = ctypes.open("/usr/lib/libSystem.B.dylib");
+      // sys/proc_info.h: the two 64-bit start-time fields follow 120 bytes
+      // of identity, command/name and process-status fields on 64-bit macOS.
+      const processInfo = ctypes.StructType("LittleZenProcessBSDInfo", [
+        { prefix: ctypes.uint8_t.array(120) },
+        { seconds: ctypes.uint64_t }, { microseconds: ctypes.uint64_t },
+      ]);
+      const readProcessInfo = system.declare("proc_pidinfo", ctypes.default_abi, ctypes.int,
+        ctypes.int, ctypes.int, ctypes.uint64_t, processInfo.ptr, ctypes.int);
       const services = ctypes.open("/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices");
       const pointer = ctypes.voidptr_t;
       const getClass = objc.declare("objc_getClass", ctypes.default_abi, pointer, ctypes.char.ptr);
@@ -1942,6 +1996,8 @@
       const orderWindow = selector("orderWindow:relativeTo:");
       const { setInterval, clearInterval, setTimeout: delayTask } = ChromeUtils.importESModule("resource://gre/modules/Timer.sys.mjs");
       let tracking = false;
+      let trackingTimer = null;
+      let quitting = false;
       let inactiveOrder = null;
       let pendingRestore = null;
       const nativeWindowFor = win => {
@@ -2009,7 +2065,7 @@
         }
       };
       const activateLauncher = (entry, phase) => {
-        if (Services.startup.shuttingDown ||
+        if (quitting || Services.startup.shuttingDown ||
             !Services.prefs.getBoolPref("extensions.littleZen.returnToSourceApp", true) ||
             !zenIsForeground()) return false;
         const running = getAppForPid(runningAppClass, appForPid, entry.sourceApp.pid);
@@ -2024,7 +2080,23 @@
       };
       const bridge = {
         // Keep the libraries/types alive while their declared functions are used.
-        objc, services, core, ctypes, snapshotOrder,
+        objc, services, core, system, ctypes, snapshotOrder,
+        publishReady() {
+          if (quitting) return;
+          const directory = launcherDirectory();
+          if (!directory.exists()) directory.create(Ci.nsIFile.DIRECTORY_TYPE, 0o700);
+          const file = directory.clone();
+          file.append(`ready-${Services.appinfo.processID}.json`);
+          const info = processInfo();
+          if (readProcessInfo(Services.appinfo.processID, 3, 0, info.address(), processInfo.size) !== processInfo.size) return;
+          const stream = Cc["@mozilla.org/network/file-output-stream;1"].createInstance(Ci.nsIFileOutputStream);
+          stream.init(file, 0x02 | 0x08 | 0x20, 0o600, 0);
+          const writer = Cc["@mozilla.org/intl/converter-output-stream;1"].createInstance(Ci.nsIConverterOutputStream);
+          writer.init(stream, "UTF-8");
+          writer.writeString(JSON.stringify({ version: 1, pid: Services.appinfo.processID,
+            started: `${info.seconds}:${info.microseconds}`, gecko: Services.appinfo.platformVersion }));
+          writer.close();
+        },
         rememberLauncher(win, context) {
           const key = returnKey(win);
           returns.delete(key);
@@ -2039,7 +2111,7 @@
             return;
           }
           entry.armed = null;
-          if (Services.startup.shuttingDown || win.__littleZenTransferInProgress || win.__littleZenSuppressAppReturn ||
+          if (quitting || Services.startup.shuttingDown || win.__littleZenTransferInProgress || win.__littleZenSuppressAppReturn ||
               !Services.prefs.getBoolPref("extensions.littleZen.returnToSourceApp", true) ||
               !zenIsForeground()) {
             log("Little Zen app return skipped", { reason: "background-or-suppressed" });
@@ -2063,11 +2135,11 @@
           }
         },
         startTracking() {
-          if (tracking) return;
+          if (tracking || quitting) return;
           tracking = true;
           // A URL AppleEvent can activate all Zen windows before JS sees it.
           // Keep a short-lived, in-memory order snapshot while Zen is inactive.
-          const timer = setInterval(() => {
+          trackingTimer = setInterval(() => {
             try {
               if ((Services.prefs.getBoolPref("extensions.littleZen.focusWindowOnly", true) ||
                    Services.prefs.getBoolPref("extensions.littleZen.returnToSourceApp", true)) &&
@@ -2075,14 +2147,30 @@
                 inactiveOrder = { at: Date.now(), order: snapshotOrder(), sourceApp: foregroundApp() };
               }
             } catch (error) {
-              clearInterval(timer);
+              clearInterval(trackingTimer);
               tracking = false;
               inactiveOrder = null;
               log("Could not snapshot macOS window order", error);
             }
           }, 250);
         },
-        noteExternalOpen() {
+        noteExternalOpen(url) {
+          if (quitting) return;
+          const handoff = url ? readLauncherContext(url) : null;
+          if (handoff) {
+            // Background dispatch never raised the normal windows. Leave their
+            // order alone, and use the recorded origin even after a cold start.
+            pendingRestore = null;
+            const source = handoff.sourceApp;
+            if (Number.isInteger(source?.pid) && Number.isFinite(source?.launched)) {
+              const actual = appIdentity(getAppForPid(runningAppClass, appForPid, source.pid));
+              if (actual && Math.abs(actual.launched - source.launched) < 0.01) {
+                log("Received background Little Zen launcher handoff");
+                return { sourceApp: actual };
+              }
+            }
+            return {};
+          }
           if (!inactiveOrder || Date.now() - inactiveOrder.at > 2000) return;
           if (Services.prefs.getBoolPref("extensions.littleZen.focusWindowOnly", true)) {
             pendingRestore = { expires: Date.now() + 3000, order: inactiveOrder.order };
@@ -2092,6 +2180,7 @@
           return { sourceApp: inactiveOrder.sourceApp };
         },
         raise(win) {
+          if (quitting) return false;
           const nativeWindow = nativeWindowFor(win);
           if (!nativeWindow) return false;
           if (!messageBool(nativeWindow, isVisible)) return false;
@@ -2110,7 +2199,24 @@
           return true;
         },
       };
+      const removeReady = () => {
+        try {
+          const file = launcherDirectory();
+          file.append(`ready-${Services.appinfo.processID}.json`);
+          if (file.exists()) file.remove(false);
+        } catch (error) { log("Could not remove Little Zen launcher readiness", error); }
+      };
       Services.obs.addObserver({ observe() {
+        quitting = true;
+        clearInterval(trackingTimer);
+        tracking = false;
+        inactiveOrder = null;
+        pendingRestore = null;
+        returns.clear();
+        removeReady();
+      }}, "quit-application-granted");
+      Services.obs.addObserver({ observe() {
+        if (![...browserWindows()].some(win => !win.closed)) removeReady();
         // The observer supplies an XPCOM window wrapper, which need not be the
         // same JS object used as the map key. Check our tracked outer windows.
         for (const [key, entry] of returns) {
@@ -2138,8 +2244,10 @@
     if (AppConstants.platform !== "macosx") return;
     whenStartupReady(win, () => {
       try {
+        const bridge = getMacWindowFocusBridge();
+        bridge?.publishReady?.();
         const handle = win.docShell.treeOwner.QueryInterface(Ci.nsIBaseWindow).nativeHandle;
-        if (handle && !/^0x0+$/.test(handle)) getMacWindowFocusBridge()?.startTracking();
+        if (handle && !/^0x0+$/.test(handle)) bridge?.startTracking();
       } catch (error) { log("Could not track macOS window order", error); }
     });
   }
@@ -4548,7 +4656,7 @@
           (Services.prefs.getBoolPref("extensions.littleZen.focusWindowOnly", true) ||
            Services.prefs.getBoolPref("extensions.littleZen.returnToSourceApp", true)) &&
           (source.startsWith("browserDOMWindow.") || source.startsWith("external"))) {
-        try { launchContext = getMacWindowFocusBridge()?.noteExternalOpen(); }
+        try { launchContext = getMacWindowFocusBridge()?.noteExternalOpen(url); }
         catch (error) { log("Could not restore background Zen window order", error); }
       }
 

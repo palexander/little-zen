@@ -8,6 +8,7 @@ Prerequisites: Python 3.10+, Zen, and the fx-autoconfig **application-level** lo
 node --check littleZen.uc.js
 sh -n install.sh
 python3 tests/run.py --zen /Applications/Zen.app/Contents/MacOS/zen
+python3 tests/launcher_handoff.py
 ```
 
 Optional browser-chrome screenshot:
@@ -19,6 +20,8 @@ python3 tests/run.py --zen /Applications/Zen.app/Contents/MacOS/zen --screenshot
 The suite checks the real tab context menu on an unselected tab, preserves its live document/Space/container during a move into Little Zen, and verifies that null/throwing adoption failures retain the source. It also checks workspace/container assignment, no sidebar or main-window tab pollution, toolbar-hover layout, destination search and keyboard/mouse selection, live document/form/history/scroll/cookie preservation during adoption, original-container retention across Space changes, failure safety, and null-safe close handling with unload refusal. A real content-link click also exercises Firefox's native protocol dispatch into the patched chooser using a local web handler, without launching an external app. Launcher tests exercise Firefox's protocol chooser with a simulated native handler, checking all eight app presets, Zoom/Linear completion markers, per-app opt-ins, Teams host and protocol variants, same-document launch flags, changed meeting destinations, web-client exclusions, accepted and canceled prompts, launch errors, browser navigation, unrelated URLs/protocols, disabling the feature, unload refusal, and additional tabs. They do not launch Notion or another external app. Native macOS controls require a separate visual check because headless screenshots do not render AppKit buttons.
 
 Validated on Zen 1.23.4b/macOS. PowerShell and Windows/Linux UI behavior have not been validated here.
+
+The background-launcher changes have also passed the existing headless suite on Zen 1.24.3b / Gecko 160.0.1. `launcher_handoff.py` checks process-start readiness against the kernel, one-time matching and expired-context cleanup using a temporary inbox. A separate visible test on November 19, 2026 checked real NSWorkspace URL forwarding into an isolated signed Zen app copy: warm opening kept existing window order and bounds across 90 samples, the new Little Zen window received native keyboard focus, and closing it returned to the same source app. A cold start also opened the URL in Little Zen, received keyboard focus, and returned to the source on close. A headless cold-start batch test verified two URLs routed to different workspaces and containers. These tests do not establish that no transient frame can ever be displayed.
 
 ## macOS activation regression
 

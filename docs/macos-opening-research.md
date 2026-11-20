@@ -24,3 +24,13 @@ Apple provides [NSWorkspace.OpenConfiguration.activates](https://developer.apple
 Prototype the small launcher only after verifying or backporting background URL handling on the target Zen build. A launcher plus working background dispatch is the most practical way to prevent ordinary Zen activation before Little Zen exists. Prefer that supported path over replacing AppKit methods at runtime or altering all browser focus behavior globally.
 
 This research did **not** install a launcher, change the default browser, alter Zen's native binaries, or enable a global focus preference.
+
+## Implemented launcher, November 19, 2026
+
+Zen 1.24.3b reports Gecko 160.0.1. `macos/LittleZenLauncher.swift` now implements the optional background URL agent using `NSWorkspace.OpenConfiguration.activates = false`. Its build/install scripts compile locally and register the app without changing the default browser; handler activation and restoration are explicit commands.
+
+The browser publishes readiness after startup using its PID and kernel process-start timestamp. This avoids relying on `NSRunningApplication.launchDate`, which can be absent for a command-line launch. The agent waits for a matching live-process marker before forwarding a URL. A private, temporary handoff record retains the original app identity across asynchronous cold startup; Zen consumes it once by matching the URL and leaves workspace/container routing inside Little Zen.
+
+The native warm-start test opened a real local fixture through NSWorkspace, retained existing window order and bounds throughout 90 samples, gave Little Zen native keyboard focus, and returned to the same source app on close. A visible cold start also opened the fixture in Little Zen, received focus and returned to the source app. One earlier visible cold-start automation attempt timed out; a subsequent instrumented run completed in 2.68 seconds. Headless cold-start and two-link routing checks also passed. These results support installing the implementation, but do not guarantee zero transient frames under every startup condition.
+
+The optional agent does not alter Zen's native binaries. Its private handoff/readiness files live outside the browser profile under `UAppData/little-zen-launcher`; URLs are consumed on delivery, and expired handoffs are removed when a subsequent handoff is read. The previous in-memory order-repair fallback remains available for direct external links that bypass the agent.

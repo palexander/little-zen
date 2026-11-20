@@ -93,6 +93,34 @@ The reliable post-close app handoff is the default. The earlier handoff remains 
 
 The macOS focus integration keeps a short-lived window-order snapshot in memory while Zen is inactive. It reads window IDs and levels and remembers the prior app’s process identity, without reading other apps’ window titles or content or writing the snapshot to disk. It only applies restoration when opening an external link immediately after activation.
 
+### Optional macOS link launcher (Firefox 160+)
+
+The optional launcher forwards HTTP/HTTPS links to Zen with macOS application activation disabled, then lets Little Zen raise its own window. Workspace and container selection still happen inside Zen. This avoids asking macOS to raise the normal Zen windows first. Warm and cold starts, keyboard focus, and returning to the source app have been checked on Zen 1.24.3b / Gecko 160.0.1. During the warm-start test, 90 window-order samples detected no raising of the existing windows; this is sampled evidence rather than a guarantee about every displayed frame.
+
+Install the updated browser script first and fully restart Zen. From a checkout of this repository, with Apple's Command Line Tools installed:
+
+```sh
+./macos/install-launcher.sh
+```
+
+The installer builds and registers `~/Applications/Little Zen Launcher.app`. It leaves the default browser unchanged. Test individual links before enabling it:
+
+```sh
+"$HOME/Applications/Little Zen Launcher.app/Contents/MacOS/LittleZenLauncher" --forward https://example.com
+```
+
+To route external links through the launcher:
+
+```sh
+"$HOME/Applications/Little Zen Launcher.app/Contents/MacOS/LittleZenLauncher" --set-default
+```
+
+Confirm the browser change if macOS prompts. To return HTTP/HTTPS handling directly to Zen, run the same executable with `--restore-zen`, or select Zen as the default browser in System Settings. The `--status` option reports the current HTTP/HTTPS handlers.
+
+The launcher has no Dock icon or browser window. It waits for a running browser window to finish initializing before sending links, including after starting Zen. A process ID and kernel process-start timestamp protect against a stale startup marker. The source app's process identity and the requested URL are stored briefly in private files under `~/Library/Application Support/zen/little-zen-launcher`; matching requests are consumed once and expired requests are removed on later handoffs. This lets closing Little Zen return to the original app even after a cold start. Navigation and tab adoption continue to use Zen's existing profile.
+
+To remove the launcher, restore Zen as the default browser first, run the executable with `--quit`, then remove its app bundle and `little-zen-launcher` data directory.
+
 ## Compatibility and limitations
 
 Validated on **Zen 1.23.4b on macOS**. Windows and Linux installers are inherited from upstream; their UI behavior has not been validated for this fork.
